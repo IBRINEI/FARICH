@@ -11,6 +11,7 @@ from sklearn.linear_model import LinearRegression
 from scipy.stats import norm, truncnorm, foldnorm
 import warnings
 from time import perf_counter
+from sklearn.decomposition import PCA
 from scipy.spatial.distance import cdist
 plt.style.use('default')
 
@@ -135,18 +136,22 @@ def rotate_point(point, angle):
     return new_x
 
 
-def rotate_event(coords):
+def rotate_event(coords, main_angle):
     angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
     angles = lin_move_to_grid(angles, plane_angles)
+    idx_to_shift = ((angles - main_angle) / 0.2327)
+    idx_to_shift = np.array([round(idx) for idx in idx_to_shift])
+    # print(idx_to_shift)
+    # TODO: fix stuff when on edge of 2pi
     angle_to_rotate = np.pi/2 - angles
-    x = rotate_point(coords, angle_to_rotate)
+    x = rotate_point(coords, angle_to_rotate) - 2 * idx_to_shift * norm_r * np.sin(np.pi / 27)
     return np.column_stack((x, np.zeros_like(x) + 1000, coords[2], coords[3]))
 
 
-def rotate_events(full_coords):
+def rotate_events(full_coords, main_angles):
     for i in range(full_coords.shape[0]):
         event_coords = full_coords[i]
-        rotated_event_coords = rotate_event(event_coords)
+        rotated_event_coords = rotate_event(event_coords, main_angles[i])
 
         for j in range(4):
             full_coords[i][j] = rotated_event_coords[:,j]
@@ -195,3 +200,59 @@ def fix_PDE_plot(PDEs, PDE_wvs):
     return {key: value for key, value in zip(PDE_wvs, PDEs)}
 
 
+def rotate_lines(full_coords):
+    angles = np.zeros(full_coords.shape[0])
+    for i in range(full_coords.shape[0]):
+        event_coords = full_coords[i]
+        rotated_event_coords, angles[i] = rotate_line(event_coords)
+
+        for j in range(3):
+            full_coords[i][j] = rotated_event_coords[:, j]
+    return angles
+
+
+def rotate_line(coords):
+    angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
+    # print(angles)
+    median_angle = np.median(angles)
+    median_angle = lin_move_to_grid(np.array([median_angle]), plane_angles)
+    # print(angles)
+    angle_to_rotate = (np.pi / 2 - median_angle)
+    # print(angle_to_rotate)
+    x, y = rotate_point_on_line(coords, angle_to_rotate)
+    return np.column_stack((x, y, coords[2])), median_angle
+
+
+def rotate_point_on_line(point, angle):
+    x, y, _ = point
+    cos_theta = np.cos(angle)
+    sin_theta = np.sin(angle)
+    new_x = x * cos_theta - y * sin_theta
+    new_y = x * sin_theta + y * cos_theta
+    return new_x, new_y
+
+
+def find_intersections(full_coords):
+    intersections = np.zeros((full_coords.shape[0], 3))
+    for i in range(full_coords.shape[0]):
+        event_coords = full_coords[i]
+        pca = PCA(n_components=1)
+        # print(event_coords.T)
+        pca.fit(np.column_stack(event_coords))
+        line_direction = pca.components_[0]
+        line_point = pca.mean_
+
+        # Calculate the parameter t for the intersection with the plane y=1000
+        p_y = line_point[1]
+        d_y = line_direction[1]
+        t = (1000 - p_y) / d_y
+
+        # Find the intersection point
+        intersection_point = line_point + t * line_direction
+
+        # print(f"Line direction: {line_direction}")
+        # print(f"Point on the line: {line_point}")
+        # print(f"Intersection point with the plane y=1000: {intersection_point}")
+        for j in range(3):
+            intersections[i][j] = intersection_point[j]
+    return intersections
