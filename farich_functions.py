@@ -138,7 +138,7 @@ def rotate_point(point, angle):
 def rotate_event(coords):
     angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
     angles = lin_move_to_grid(angles, plane_angles)
-    angle_to_rotate = np.pi/2 - angles[0]
+    angle_to_rotate = np.pi/2 - angles
     x = rotate_point(coords, angle_to_rotate)
     return np.column_stack((x, np.zeros_like(x) + 1000, coords[2], coords[3]))
 
