@@ -18,6 +18,7 @@ plt.style.use('default')
 SIPM_GEOMETRIC_EFFICIENCY = 0.85
 SIPM_CELL_SIZE = 3.36
 plane_angles = np.array([1.745319668152660597e-01, 4.072425337478433605e-01, 6.399531006804206612e-01, 8.726636676129979620e-01, 1.105374234545575263e+00, 1.338084801478152563e+00, 1.570795368410729864e+00, 1.803505935343307165e+00, 2.036216502275884466e+00, 2.268927069208461766e+00, 2.501637636141039067e+00, 2.734348203073616368e+00, 2.967058770006193225e+00, 3.199769336938770525e+00, 3.432479903871347826e+00, 3.665190470803925127e+00, 3.897901037736502428e+00, 4.130611604669079284e+00, 4.363322171601657473e+00, 4.596032738534233886e+00, 4.828743305466812075e+00, 5.061453872399388487e+00, 5.294164439331966676e+00, 5.526875006264543089e+00, 5.759585573197120389e+00, 5.992296140129697690e+00, 6.225006707062274991e+00])
+norm_r = 1007.0091186826339
 
 
 def plot_cyl(file, coords=None, transposed=False):
@@ -234,10 +235,14 @@ def rotate_point_on_line(point, angle):
 
 def find_intersections(full_coords):
     intersections = np.zeros((full_coords.shape[0], 3))
+    zeros = np.zeros((1, 3))
     for i in range(full_coords.shape[0]):
         event_coords = full_coords[i]
         pca = PCA(n_components=1)
-        # print(event_coords.T)
+
+        if event_coords[0].shape[0] == 1:
+            event_coords = [np.insert(arr, 0, 0.) for arr in event_coords]
+
         pca.fit(np.column_stack(event_coords))
         line_direction = pca.components_[0]
         line_point = pca.mean_
