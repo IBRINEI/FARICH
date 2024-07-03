@@ -345,3 +345,76 @@ def find_intersections(full_coords):
         for j in range(3):
             intersections[i][j] = intersection_point[j]
     return intersections
+
+
+def applySpaceCut(edf: pd.DataFrame) -> pd.DataFrame:
+    return edf[(abs(edf['x_c'] - edf['x_i']) <= 220) & (abs(edf['y_c'] - edf['y_i']) <= 220)]
+
+
+def planeRecalculation(edf: pd.DataFrame, idf: pd.DataFrame):
+    R = edf[['x_c', 'y_c', 'z_c']].to_numpy()
+    R_i = edf[['x_i', 'y_i', 'z_c']].to_numpy()
+    N = edf[['nx_p', 'ny_p', 'nz_p']].to_numpy()
+    dist = idf.W / 2 + idf.zdis
+    alpha = (float(dist)) / N[:, 2]
+    r_d = N * alpha[:, np.newaxis]
+
+    u = R - r_d
+    dot = np.sum(N * u, axis=1)
+    w = r_d - R_i
+    fac = -np.sum(N * w, axis=1) / dot
+    u *= fac[:, np.newaxis]
+
+    R_new = r_d + u
+
+    speedOfLight_mmperns = 299.792458
+    t_dif = np.sqrt(np.sum((R_new - R) ** 2, axis=1)) / speedOfLight_mmperns
+    edf['t_c'] = edf['t_c'] + np.sign(R_new[:, 2] - R[:, 2]) * t_dif
+
+    edf['recalculated_x'] = R_new[:, 0]
+    edf['recalculated_y'] = R_new[:, 1]
+    edf['recalculated_z'] = R_new[:, 2]
+
+
+def planeRotation(edf: pd.DataFrame):
+    R = edf[['recalculated_x', 'recalculated_y', 'recalculated_z']].to_numpy()
+    R_i = edf[['x_i', 'y_i', 'z_c']].to_numpy()
+    N = edf[['nx_p', 'ny_p', 'nz_p']].to_numpy() # N
+    M = np.array([0, 0, 1])                           # M
+    c = np.dot(N, M) / (np.linalg.norm(M) * np.linalg.norm(N, axis=1))
+    axis = np.cross(N, np.broadcast_to(M, (N.shape[0], 3))) / np.linalg.norm(np.cross(N, np.broadcast_to(M, (N.shape[0], 3))), axis=1, keepdims=True)
+    x, y, z = axis.T
+    s = np.sqrt(1-c*c)
+    C = 1-c
+    rmat = np.array([
+      [x*x*C+c, x*y*C-z*s, x*z*C+y*s],
+      [y*x*C+z*s, y*y*C+c, y*z*C-x*s],
+      [z*x*C-y*s, z*y*C+x*s, z*z*C+c]])
+    # print(rmat.shape)
+    # print(R.shape)
+    # print(rmat[:, :, 0])
+    # print(R[0])
+    # print(rmat[:, :, 0] @ R[0])
+    rotated_R = np.matmul(rmat.transpose((2, 0, 1)), R[:, :, np.newaxis])
+    rotated_R = np.squeeze(rotated_R, axis=-1).transpose().T
+    rotated_R_i = np.matmul(rmat.transpose((2, 0, 1)), R_i[:, :, np.newaxis])
+    rotated_R_i = np.squeeze(rotated_R_i, axis=-1).transpose().T
+    # print(rotated_R[0])
+    maskR = np.logical_or(abs(rotated_R[:, 0]) >= 5000, abs(rotated_R[:, 1]) >= 5000)
+    maskR_i = np.logical_or(abs(rotated_R_i[:, 0]) >= 5000, abs(rotated_R_i[:, 1]) >= 5000)
+    rotated_R[maskR] = [5000, 5000, 0]
+    rotated_R_i[maskR_i] = [5000, 5000, 0]
+    rotated_n = (rotated_R_i - edf[['x_p', 'y_p', 'z_p']].to_numpy()) / np.linalg.norm(rotated_R_i - edf[['x_p', 'y_p', 'z_p']].to_numpy(), axis=1, keepdims=True)
+    edf['rotated_x'] = rotated_R[:,0]
+    edf['rotated_y'] = rotated_R[:,1]
+    edf['rotated_z'] = rotated_R[:,2]
+    edf['rotated_x_i'] = rotated_R_i[:,0]
+    edf['rotated_y_i'] = rotated_R_i[:,1]
+    edf['rotated_z_i'] = rotated_R_i[:,2]
+    edf['rotated_nx_p'] = rotated_n[:,0]
+    edf['rotated_ny_p'] = rotated_n[:,1]
+    edf['rotated_nz_p'] = rotated_n[:,2]
+
+
+def applySecondSpaceCut(edf: pd.DataFrame) -> pd.DataFrame:
+  return edf[(abs(edf['rotated_x'] - edf['rotated_x_i']) <= 220) & (abs(edf['rotated_y'] - edf['rotated_y_i']) <= 220)]
