@@ -110,6 +110,90 @@ def plot_cyl(file, coords=None, transposed=False):
     fig.show()
 
 
+def plot_event(ev_coords, track_coords, tpc_coords, transposed=False, num=0):
+    def cylinder(r, h, a =0, nt=100, nv =50):
+        """
+        parametrize the cylinder of radius r, height h, base point a
+        """
+        theta = np.linspace(0, 2*np.pi, nt)
+        v = np.linspace(a, a+h, nv )
+        theta, v = np.meshgrid(theta, v)
+        x = r*np.cos(theta)
+        y = r*np.sin(theta)
+        z = v
+        return x, y, z
+
+    colorscale = [[0, 'blue'],
+                 [1, 'blue']]
+
+    x1, y1, z1 = cylinder(1000, 2800, a=-1400)
+    if transposed:
+        z1, x1 = x1, z1
+    cyl1 = go.Surface(x=x1, y=y1, z=z1,
+                     colorscale = colorscale,
+                     showscale=False,
+                     opacity=0.05)
+
+    fig = go.Figure()
+
+    # colors = [f'rgba({255}, {int(255 * i / 9)}, 0, 0.6)' for i in range(10)]  # Adjust the colors as needed
+    colors = [
+        'rgba(255, 0, 0, 0.6)',   # Red
+        'rgba(255, 165, 0, 0.6)', # Orange
+        'rgba(255, 255, 0, 0.6)', # Yellow
+        'rgba(0, 255, 0, 0.6)',   # Green
+        'rgba(0, 0, 255, 0.6)',   # Blue
+        'rgba(75, 0, 130, 0.6)',  # Indigo
+        'rgba(128, 0, 128, 0.6)', # Violet
+        'rgba(255, 99, 71, 0.6)', # Tomato
+        'rgba(0, 128, 128, 0.6)', # Teal
+        'rgba(128, 128, 0, 0.6)'  # Olive
+    ]
+    x = ev_coords[0]
+    y = ev_coords[1]
+    z = ev_coords[2]
+
+    if transposed:
+        z, x = x, z
+    fig.add_trace(go.Scatter3d(x=x, y=y, z=z, mode='markers', marker=dict(size=1, color=colors[num]), name=f'Ring {num+1}'))
+
+    x = track_coords[0]
+    y = track_coords[1]
+    z = track_coords[2]
+    if transposed:
+        z, x = x, z
+    fig.add_trace(go.Scatter3d(x=x, y=y, z=z, marker=dict(size=1, color=colors[num + 1]), name=f'Drift Chamber {num + 1}', line=dict(dash='dash')))
+
+    # x = np.array(file['events;1']['SiStripG4Hits.postStepPosition.x'].array())[num]
+    # y = np.array(file['events;1']['SiStripG4Hits.postStepPosition.y'].array())[num]
+    # z = np.array(file['events;1']['SiStripG4Hits.postStepPosition.z'].array())[num]
+    # fig.add_trace(go.Scatter3d(x=x, y=y, z=z, marker=dict(size=1, color=colors[num]), name=f'Si Strips {num + 1}', line=dict(dash='solid')))
+
+    x = tpc_coords[0]
+    y = tpc_coords[1]
+    z = tpc_coords[2]
+    if transposed:
+        z, x = x, z
+    fig.add_trace(go.Scatter3d(x=x, y=y, z=z, marker=dict(size=1, color=colors[num + 2]), name=f'TPC {num + 1}', line=dict(dash='solid')))
+
+
+    fig.add_trace(cyl1)
+    # Update the layout to add labels and a title
+    scene = dict(xaxis_title='X Axis', yaxis_title='Y Axis', zaxis_title='Z Axis', aspectmode='cube', xaxis=dict(range=[-1005, 1005]), yaxis=dict(range=[-1005, 1005]), zaxis=dict(range=[-1405, 1405]),)
+    if transposed:
+        scene = dict(zaxis_title='X Axis', yaxis_title='Y Axis', xaxis_title='Z Axis', aspectmode='cube', zaxis=dict(range=[-1005, 1005]), yaxis=dict(range=[-1005, 1005]), xaxis=dict(range=[-1405, 1405]),)
+    fig.update_layout(
+                        autosize=False,
+                        width=1000,
+                        height=1000,
+                        scene=scene,
+                        template='plotly_dark',   # DARK OR LIGHT
+                        title='3D Scatter Plot')
+
+    # Show the plot
+    fig.show()
+
+
 def sipm_sim(full_coords, sipm_eff):
     for i in range(full_coords.shape[0]):
         event_coords = full_coords[i]
