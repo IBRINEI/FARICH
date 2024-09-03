@@ -417,4 +417,355 @@ def planeRotation(edf: pd.DataFrame):
 
 
 def applySecondSpaceCut(edf: pd.DataFrame) -> pd.DataFrame:
-  return edf[(abs(edf['rotated_x'] - edf['rotated_x_i']) <= 220) & (abs(edf['rotated_y'] - edf['rotated_y_i']) <= 220)]
+    return edf[(abs(edf['rotated_x'] - edf['rotated_x_i']) <= 220) & (abs(edf['rotated_y'] - edf['rotated_y_i']) <= 220)]
+
+
+def edf_to_bdf(edf_col: pd.Series, bdf: pd.DataFrame):
+    to_bdf = [sub.iloc[0] for _, sub in edf_col.groupby(level=0)]
+    bdf[edf_col.name] = pd.Series(to_bdf)
+
+
+def primaryDirectionRecalculation(edf: pd.DataFrame):
+    N = edf.loc[:, ('nx_p', 'ny_p', 'nz_p')].to_numpy()
+    M = []
+    theta_ps = []
+    for n in N:
+        M.append([0, 0, 1])
+        dot_product = np.dot(n, [0, 0, 1.])
+
+        # Calculate the magnitudes (norms)
+        mag_vector = np.linalg.norm(n)
+        mag_z_axis = np.linalg.norm([0, 0, 1.])
+
+        # Calculate the cosine of the angle
+        cos_theta = dot_product / (mag_vector * mag_z_axis)
+
+        # Handle possible numerical issues with floating point precision
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+
+        # Calculate the angle in radians
+        theta_radians = np.arccos(cos_theta)
+        theta_ps.append(theta_radians)
+        # print(n)
+        # print(C_inv)
+        # print(C_inv @ n)
+        # break
+    M = np.array(M)
+    theta_ps = np.array(theta_ps)
+    edf['recalculated_nx_p'] = M[:, 0]
+    edf['recalculated_ny_p'] = M[:, 1]
+    edf['recalculated_nz_p'] = M[:, 2]
+    edf['theta_p'] = theta_ps
+
+
+def recoAngles(edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False):
+    '''
+    Геометрическая реконструкция углов фотонов относительно направления частицы.
+    Из координат срабатываний и частиц вычисляются углы theta_c, phi_c и время вылета фотонов t_c_orig и добавляются к edf.
+    '''
+    r0 = edf.loc[:, ('x_p', 'y_p', 'z_p')].to_numpy()
+    if rotation_mode:
+        r = edf.loc[:, ('rotated_x', 'rotated_y', 'rotated_z')].to_numpy()
+    # n0 = edf.loc[:, ('rotated_nx_p', 'rotated_ny_p', 'rotated_nz_p')].to_numpy()
+        n0 = edf.loc[:, ('recalculated_nx_p', 'recalculated_ny_p', 'recalculated_nz_p')].to_numpy()
+    else:
+        r  = edf.loc[:, ('x_c', 'y_c', 'z_c')].to_numpy()
+        n0 = edf.loc[:, ('nx_p', 'ny_p', 'nz_p')].to_numpy()
+
+    speedOfLight_mmperns = 299.792458 # мм/нс
+
+    # расстояние от радиатора до детектора
+    dist = float(idf['distance'])
+
+    # толщина радиатора
+    W = float(idf['W'])
+
+    # расстояние от точки вылета частицы до входной плоскости радиатора
+    rad_pos = float(idf['zdis'])
+
+    # полное число срабатываний
+    N = edf.shape[0]
+
+    # координаты точки пересечения трека с ФД
+    if not rotation_mode:
+        y_i = r0[:,1] + (dist + rad_pos) * n0[:,1] / n0[:,2] # r0[:,1] + (dist + W + rad_pos) * n0[:,1] / n0[:,2]   #   r0[:,1] + (dist + rad_pos) * n0[:,1] / n0[:,2]
+        x_i = r0[:,0] + (y_i - r0[:,1]) * n0[:,0] / n0[:,1] # r0[:,0] + (y_i - r0[:,1]) * n0[:,0] / n0[:,1]    #     r0[:,0] + (dist + rad_pos) * n0[:,0] / n0[:,2]
+        edf['x_i'] = x_i
+        edf['y_i'] = y_i
+        edf['r_p_c'] = np.sqrt((r0[:,0] - x_i) ** 2 + (r0[:,1] - y_i) ** 2 + (r0[:,2] - r[:,2]) ** 2)
+        edf['r_c'] = np.sqrt((x_i - edf['x_c']) ** 2 + (y_i - edf['y_c']) ** 2)
+
+    if rotation_mode:
+        n_mean = float(idf['n_mean'])
+
+        edf['rotated_r_c'] = np.sqrt((edf['rotated_x_i'] - edf['rotated_x']) ** 2 + (edf['rotated_y_i'] - edf['rotated_y']) ** 2)
+
+        rotated_r_c = edf['rotated_r_c'].to_numpy()
+        # r_p_c = edf['r_p_c'].to_numpy()
+        beta = edf['beta'].to_numpy()
+        r_p_c = dist # or + W/2 ???
+
+
+    # avg_betas = []
+    # for _, subentry in edf['beta_from_true_r'].groupby(level=0):
+    #   avg_beta = subentry.mean()
+    #   for __ in subentry:
+    #     avg_betas.append(avg_beta)
+    # edf['beta_from_true_r_mean'] = avg_betas
+    # косинусы и синусы сферических углов направления частицы
+    costheta, sintheta = n0[:,2], np.sqrt(n0[:,0]**2+n0[:,1]**2)
+    phi = np.arctan2(n0[:,1], n0[:,0])
+    cosphi, sinphi = np.cos(phi), np.sin(phi)
+
+    # номинальная точка вылета фотонов
+    ro = r0 + (W/2+rad_pos)/n0[:,2].reshape(N,1)*n0
+
+    """
+    Преобразование в СК частицы
+    𝑢𝑥 = cos 𝜃(𝑣𝑥 cos 𝜙 + 𝑣𝑦 sin 𝜙) − 𝑣𝑧 sin 𝜃,
+    𝑢𝑦 = −𝑣𝑥 sin 𝜙 + 𝑣𝑦 cos 𝜙,
+    𝑢𝑧 = sin 𝜃(𝑣𝑥 cos 𝜙 + 𝑣𝑦 sin 𝜙) + 𝑣𝑧 cos 𝜃.
+    """
+
+    # вектор направления фотона в лабораторной СК
+    s = (r-ro)
+    snorm = np.linalg.norm(s, axis=1, keepdims=True)
+    v = s / snorm
+    if not rotation_mode:
+        edf['t_c_orig'] = edf['t_c'] - (snorm / speedOfLight_mmperns).reshape(N)
+
+    # освобождение памяти при необходимости
+    #del r0, n0, ro, r, s
+
+    U = np.stack((np.stack((costheta*cosphi, costheta*sinphi, -sintheta)),
+                np.stack((-sinphi,         cosphi,          np.full(N, 0.))),
+                np.stack((sintheta*cosphi, sintheta*sinphi, costheta)))).transpose(2,0,1)
+
+    # единичный вектор направления фотона в СК частицы
+    u = (U @ v.reshape(N,3,1)).reshape(N,3)
+
+    # сферические углы фотона в СК частицы
+    if rotation_mode:
+        edf['rotated_theta_c'] = np.arccos(u[:,2])
+        edf['rotated_phi_c'] = np.arctan2(-u[:,1], -u[:,0])
+    else:
+        edf['theta_c'] = np.arccos(u[:,2])
+        edf['phi_c'] = np.arctan2(-u[:,1], -u[:,0])
+        avg_thetas = []
+        for _, subentry in edf['theta_c'].groupby(level=0):
+            avg_theta = subentry.mean()
+            for __ in subentry:
+                avg_thetas.append(avg_theta)
+        edf['theta_c_mean'] = avg_thetas
+
+
+def local_sum_2d(event, r_slices, t_slices, square_counts, max_index, n, m, timestep, t_window_width, method='N/r'):
+    cut_event = event[(event.t_c <= np.clip(t_slices[max_index[1]] + t_window_width + timestep * m, 0, 10)) & (event.t_c >= np.clip(t_slices[max_index[1]] - timestep * m, 0, 10)) &
+                    (event.rotated_r_c <= r_slices[max_index[0] + n]) & (event.rotated_r_c >= r_slices[max_index[0] - n])]
+    return np.mean(cut_event.rotated_r_c)
+
+
+def local_weighed_sum_2d(r_slices, t_slices, square_counts, max_index, n, m, method='N/r'):
+    arr = np.mean(square_counts[max_index[0] - n:max_index[0] + n + 1, np.clip(max_index[1] - m, 0, 50):np.clip(max_index[1] + m + 1, 0, 50)], axis=1)
+    if method == 'N/r':
+        sum_arr = r_slices[max_index[0] - n:max_index[0] + n + 1] ** 2 * arr
+        den_arr = r_slices[max_index[0] - n:max_index[0] + n + 1] * arr
+    else:
+        sum_arr = r_slices[max_index[0] - n:max_index[0] + n + 1] * arr
+        den_arr = arr
+
+    weighted_sum = np.sum(sum_arr)
+    weighted_den = np.sum(den_arr)
+
+    return weighted_sum / weighted_den
+
+
+def local_weighed_sum(r_slices, counts, max_index, n, method='N/r'):
+    if method == 'N/r':
+        sum_arr = r_slices[max_index - n:max_index + n + 1] ** 2 * counts[max_index - n:max_index + n + 1]
+        den_arr = r_slices[max_index - n:max_index + n + 1] * counts[max_index - n:max_index + n + 1]
+    else:
+        sum_arr = r_slices[max_index - n:max_index + n + 1] * counts[max_index - n:max_index + n + 1]
+        den_arr = counts[max_index - n:max_index + n + 1]
+
+    weighted_sum = np.sum(sum_arr)
+    weighted_den = np.sum(den_arr)
+
+    return weighted_sum / weighted_den
+
+
+def pol(x, a, b, c):
+    return a * np.exp((x - b) ** 2 / c ** 2)
+
+
+def pol2(x, p0, p1, p2):
+    return p0 + p1 * x + p2 * x ** 2
+
+
+def d3pol2(X, p0, p1, p2, q0, q1, q2, k0, k1, k2):
+    r, theta = X
+    # return pol(r, pol2(theta, p0, p1, p2), pol2(theta, q0, q1, q2), pol2(theta, k0, k1, k2))
+    return pol(r, p0 + p1 * theta + p2 * theta ** 2, q0 + q1 * theta + q2 * theta ** 2, k0 + k1 * theta + k2 * theta ** 2)
+
+
+def momentum_from_beta(beta, mass):
+    return mass * beta / np.sqrt(1 - beta ** 2)
+
+
+def momentum_pol(x, a, b, c):
+    return momentum_from_beta(pol(x, a, b, c), 139.57)
+
+
+def momentum_d3pol2(X, p0, p1, p2, q0, q1, q2, k0, k1, k2):
+    return momentum_from_beta(d3pol2(X, p0, p1, p2, q0, q1, q2, k0, k1, k2), 139.57)
+
+
+def rSlidingWindowIntro(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple, step: float, method='N/r', cal_arr=False, t_window_width=2,
+                        r_width_factor=2, t_width_factor=8, full_width_t_hist = False, num_of_groups=5):
+    r_r_c = edf['rotated_r_c']
+    time_step = float(t_window_width) / t_width_factor
+    all_avgs = np.array(r_r_c.groupby(level=0).transform('mean').to_list()).ravel()
+    all_dists = np.abs(r_r_c - all_avgs)
+    all_sigms = np.array(r_r_c.groupby(level=0).transform('std').to_list()).ravel()
+
+    edf['mean_rotated_r_c'] = all_avgs
+    edf['dist_from_mean_rotated_r_c'] = all_dists
+    edf['rotated_r_c_sigm'] = all_sigms
+
+    # Compute beta_step and r_step using NumPy functions
+    beta_step = np.ptp(edf['beta'].values) # не факт что нужно values
+
+    # Compute beta_intervals using NumPy linspace function
+    num_of_groups = num_of_groups
+    beta_intervals = np.linspace(edf['beta'].min(), edf['beta'].max(), num=num_of_groups)
+
+    # Compute beta_group_to_bdf and  using NumPy operations
+    beta_group = np.floor((num_of_groups * edf['beta'] + max(edf['beta']) - (num_of_groups + 1) * min(edf['beta'])) / beta_step).values
+
+    edf['beta_group'] = beta_group
+
+    edf_to_bdf(edf.beta_group, bdf)
+
+    edf_to_bdf(edf.theta_p, bdf)
+    bdf['cos_theta_p'] = np.cos(bdf['theta_p'])
+    # edf_to_bdf(edf.signal_counts, bdf)
+    edf_to_bdf(edf.beta, bdf)
+
+
+def calculateSignalCounts(edf: pd.DataFrame, bdf: pd.DataFrame):
+    signal_counts = edf['signal'].groupby(level=0).sum()
+    bdf['signal_counts'] = signal_counts.values
+    edf['signal_counts'] = edf.signal.groupby(level=0).transform('sum').values
+
+
+def rSlidingWindowLoop1(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple, step: float, method='N/r', cal_arr=False, t_window_width=2,
+                        r_width_factor=2, t_width_factor=8, full_width_t_hist = True, weighed = True):
+    mean_cos_theta_p = 0.8535536229610443
+    param_step = step
+    step = param_step / r_width_factor
+    time_step = float(t_window_width) / t_width_factor
+
+    r_slices = np.arange(0, 800, step=step)
+    t_slices = np.arange(0, 15, step=time_step)
+    phi_slices = np.array([-np.pi, -2.013, -0.671, 0, 0.671, 2.013, np.pi])
+
+    n_sigmas = np.ptp(avg_sigmas)
+    t_sigmas = np.ptp(avg_t_sigmas)
+    # all_counts_to_edf = np.zeros((n_sigmas, len(edf)))
+    all_counts_to_edf = np.zeros((n_sigmas, len(edf)))
+    all_calculated_r = np.zeros((n_sigmas, len(edf)))
+    all_calculated_r_from_2d = np.zeros((t_sigmas, n_sigmas, len(edf)))
+    cur_ind = 0
+    for i, (entry, subentry) in enumerate(edf[['rotated_r_c', 't_c', 'rotated_phi_c', 'theta_p']].groupby(level=0)):
+        if np.cos(subentry.theta_p).iat[0] >= mean_cos_theta_p:
+            step = param_step / (r_width_factor + 1)
+            r_slices = np.arange(0, 800, step=step)
+        else:
+            step = param_step / r_width_factor
+            r_slices = np.arange(0, 800, step=step)
+
+        counts = np.zeros(r_slices.shape)
+        square_counts = np.zeros(shape=(r_slices.shape[0], t_slices.shape[0]))
+
+        mask = np.logical_and(subentry.rotated_r_c >= 16, subentry.rotated_r_c <= 80)
+        rotated_r_c = subentry.rotated_r_c[mask]
+        t_c = subentry.t_c[mask]
+        rotated_phi_c = subentry.rotated_phi_c[mask]
+
+        counts, _ = np.histogram(rotated_r_c, bins=r_slices)
+        square_counts, _, __ = np.histogram2d(rotated_r_c, t_c, bins=(r_slices, t_slices))
+
+        if method == 'N/r':
+            counts = np.divide(np.add(counts[:-1], counts[1:]), r_slices[1:-1])
+            shift = 0
+            square_counts[:-1, :] = np.divide(np.add(square_counts[:-1, :], square_counts[1:, :]), r_slices[1:-1-shift*2, np.newaxis])
+
+        if full_width_t_hist:
+            square_counts_but_last = sum([square_counts[:, it : -t_width_factor + 1 + it] for it in range(t_width_factor - 1)])
+            square_counts = np.add(square_counts_but_last, square_counts[:, t_width_factor - 1:])
+
+        max_index = np.argmax(counts)
+
+        max_index_2d = np.unravel_index(np.argmax(square_counts), square_counts.shape)
+
+        for j in range(n_sigmas):
+            all_counts_to_edf[j][cur_ind:subentry.shape[0] + cur_ind] = counts[np.floor_divide(subentry.rotated_r_c, step).astype(int)] # fixed
+            # avg_r_from_slices = local_weighed_sum(r_slices, counts, max_index, j + avg_sigmas[0], method)
+            # all_calculated_r[j, cur_ind:subentry.shape[0] + cur_ind] = np.repeat(avg_r_from_slices, subentry.shape[0])
+            for t in range(t_sigmas):
+                if weighed:
+                    avg_r_from_2d_slices = local_weighed_sum_2d(r_slices, t_slices, square_counts, max_index_2d, j + avg_sigmas[0], t + avg_t_sigmas[0])
+                else:
+                    avg_r_from_2d_slices = local_sum_2d(subentry, r_slices, t_slices, square_counts, max_index_2d, j + avg_sigmas[0], t + avg_t_sigmas[0], t_window_width=t_window_width, timestep=time_step)
+
+                all_calculated_r_from_2d[t, j, cur_ind:subentry.shape[0] + cur_ind] = np.repeat(avg_r_from_2d_slices, subentry.shape[0])
+
+        cur_ind += subentry.shape[0]
+    for j in range(n_sigmas):
+        edf[f'slice_counts_{j + avg_sigmas[0]}_sigms'] = all_counts_to_edf[j]
+        # edf[f'unfixed_calculated_r_{j + avg_sigmas[0]}_sigms'] = all_calculated_r[j, :]
+        for t in range(t_sigmas):
+            edf[f'unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms'] = all_calculated_r_from_2d[t, j, :]
+            edf_to_bdf(edf[f'unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms'], bdf)
+
+
+def rSlidingWindowLoop2(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple, step: float, method='N/r', cal_arr=False, t_window_width=2,
+                        r_width_factor=2, t_width_factor=8, full_width_t_hist = False, param_fit=False):
+
+  # cal_arr = np.array([np.array([np.array(y) for y in x]) for x in cal_arr])
+
+    edf_to_bdf(edf.theta_p, bdf)
+    bdf['cos_theta_p'] = np.cos(bdf['theta_p'])
+    edf['cos_theta_p'] = np.cos(edf['theta_p'])
+    theta_interval = np.ptp(bdf.cos_theta_p) / 10
+    theta_min = min(bdf.cos_theta_p)
+    theta_max = max(bdf.cos_theta_p)
+    edf_to_bdf(edf.beta, bdf)
+
+    for n_sigms in range(*avg_sigmas):
+        for t_sigms in range(*avg_t_sigmas):
+            meas_betas = np.zeros(edf.shape[0])
+            cur_ind = 0
+            # meas_betas = []
+            for entry, subentry in edf[f'unfixed_calculated_r_2d_{n_sigms}_rsigms_{t_sigms}_tsigms'].groupby(level=0):
+                if param_fit:
+                    cos_theta_p = edf.cos_theta_p[entry].iloc[0]
+                    meas_beta = pol(subentry.iloc[0], pol2(cos_theta_p, *cal_arr[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][0]),
+                                  pol2(cos_theta_p, *cal_arr[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][1]),
+                                  pol2(cos_theta_p, *cal_arr[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][2]))
+                else:
+                    if edf.cos_theta_p[entry].iloc[0] != theta_max:
+                        meas_beta = pol(subentry.iloc[0], *(cal_arr[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][(np.floor(((edf.cos_theta_p[entry].iloc[0]) - theta_min) / theta_interval)).astype(int)]))
+                    else:
+                        meas_beta = pol(subentry.iloc[0], *(cal_arr[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][9]))
+                meas_betas[cur_ind: subentry.shape[0] + cur_ind] = np.repeat(meas_beta, subentry.shape[0])
+                cur_ind += subentry.shape[0]
+            edf[f'beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms'] = meas_betas
+            edf[f'delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'] = edf[f'beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms'] - edf['beta']
+            edf[f'eps_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'] = edf[f'delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'] / edf['beta'] * 100
+
+            edf_to_bdf(edf[f'beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms'], bdf)
+            edf_to_bdf(edf[f'delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'], bdf)
+            edf_to_bdf(edf[f'eps_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'], bdf)
+
+
