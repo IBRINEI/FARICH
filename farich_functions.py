@@ -723,8 +723,9 @@ def rSlidingWindowLoop1(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame,
             edf_to_bdf(edf[f'unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms'], bdf)
 
 
-def rSlidingWindowLoop2(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple, step: float, method='N/r', cal_arr=False, t_window_width=2,
-                        r_width_factor=2, t_width_factor=8, full_width_t_hist = False, param_fit=False):
+def rSlidingWindowLoop2(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple,
+                        step: float, method='N/r', cal_arr=False, t_window_width=2,
+                        r_width_factor=2, t_width_factor=8, full_width_t_hist=False, param_fit=False):
 
   # cal_arr = np.array([np.array([np.array(y) for y in x]) for x in cal_arr])
 
@@ -761,5 +762,81 @@ def rSlidingWindowLoop2(edf: pd.DataFrame, idf: pd.DataFrame, bdf: pd.DataFrame,
             edf_to_bdf(edf[f'beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms'], bdf)
             edf_to_bdf(edf[f'delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'], bdf)
             edf_to_bdf(edf[f'eps_beta_{n_sigms}_rsigms_{t_sigms}_tsigms'], bdf)
+
+
+def save_calibration_plot(fig, dir_to_save, deg_lim, r_sigms, avg_t_sigmas):
+    filename = f'rsigm={r_sigms}_t_sigms={avg_t_sigmas[0]}-{avg_t_sigmas[-1] - 1}'
+    if deg_lim:
+        filename += '_10deg'
+    if dir_to_save != '':
+        fig.savefig(os.path.join('calibrations_barrel', dir_to_save, f'{filename}'))
+        plt.close(fig)
+
+
+def plot_calibration(t_bdf: pd.DataFrame, chosen_column: str, t_sigms: int, momentum_min, momentum_max, rs, pol_param,
+                     chi2, theta_interval_index, fig, axs, avg_sigmas, avg_t_sigmas, target_variable, target_angle):
+    if t_sigms - avg_t_sigmas[0] != 0:
+        for_colorbar = axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].hist2d(t_bdf[chosen_column], t_bdf[target_variable], bins=70, range=((0, 80), (momentum_min, momentum_max)))
+        fig.colorbar(for_colorbar[3], ax=axs[theta_interval_index, t_sigms - avg_t_sigmas[0]])
+    else:
+        for_colorbar = axs[theta_interval_index].hist2d(t_bdf[chosen_column], t_bdf[target_variable], bins=70, range=((0, 80), (momentum_min, momentum_max)))
+        fig.colorbar(for_colorbar[3], ax=axs[theta_interval_index])
+    if t_sigms - avg_t_sigmas[0] != 0:
+        # axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].plot(rs, pol(rs, *pol_param), label=r'$\chi^2$ = '+ str(chi2), c='r')
+        axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].set_xlim((0, 90))
+        # axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].set_ylim((0.955, momentum_max))
+        axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].set_ylim((momentum_min, momentum_max))
+        axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].set_xlabel(r'$R_{reco}$, mm')
+        axs[theta_interval_index, t_sigms - avg_t_sigmas[0]].set_ylabel(r'$target_{true}$')
+    else:
+        axs[theta_interval_index].plot(rs, momentum_pol(rs, *pol_param), label=r'$\chi^2$ = ' + str(chi2), c='r')
+        axs[theta_interval_index].set_xlim((0, 90))
+        # axs[theta_interval_index].set_ylim((0.955, momentum_max))
+        axs[theta_interval_index].set_ylim((momentum_min, momentum_max))
+        axs[theta_interval_index].set_xlabel(r'$R_{reco}$, mm')
+        axs[theta_interval_index].set_ylabel(r'target_{true}$')
+
+
+def calibration_loop(bdf: pd.DataFrame, chosen_column: str, r_sigms: int, t_sigms: int, num_of_theta_intervals: int,
+                     to_return_unbinned: np.ndarray, errs_tmp: np.ndarray, fig, axs, avg_sigmas, avg_t_sigmas,
+                     target_variable, target_angle):
+    theta_p_max = max(bdf[target_angle])
+    theta_p_min = min(bdf[target_angle])
+    momentum_min = min(bdf[target_variable])
+    momentum_max = max(bdf[target_variable])
+
+    theta_intervals = np.linspace(theta_p_min, theta_p_max, num=num_of_theta_intervals)
+    theta_dif = (theta_intervals[1:] + theta_intervals[:-1]) / 2
+
+    for theta_interval_index in range(num_of_theta_intervals - 1):
+        t_bdf = bdf.copy()
+        t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
+        t_bdf = t_bdf[t_bdf.signal_counts >= 15]
+        t_bdf = t_bdf[t_bdf[target_angle] <= theta_intervals[theta_interval_index + 1]]
+        t_bdf = t_bdf[t_bdf[target_angle] >= theta_intervals[theta_interval_index]]
+        # t_bdf = t_bdf[t_bdf[chosen_column] <= 65]
+        # t_bdf = t_bdf[t_bdf[chosen_column] >= 25]
+
+        pol_param, cov = curve_fit(momentum_pol, t_bdf[chosen_column], t_bdf[target_variable], maxfev=50000)
+        to_return_unbinned[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][theta_interval_index] = pol_param
+        pol_param_errs = np.sqrt(np.diag(cov))
+        errs_tmp[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][theta_interval_index] = pol_param_errs
+        rs = np.linspace(10, 80, num=50)
+        chi2 = np.sum((t_bdf[target_variable] - pol(t_bdf[chosen_column], *pol_param)) ** 2)
+        plot_calibration(t_bdf, chosen_column, t_sigms, momentum_min, momentum_max, rs, pol_param, chi2,
+                         theta_interval_index, fig, axs, avg_sigmas, avg_t_sigmas, target_variable, target_angle)
+
+
+def param_fit_calibration(bdf: pd.DataFrame, chosen_column: str, r_sigms: int, t_sigms: int, avg_sigmas, avg_t_sigmas,
+                          fit_params, target_variable, target_angle):
+    t_bdf = bdf.copy()
+    t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
+    t_bdf = t_bdf[t_bdf.signal_counts >= 5]
+    X = (np.array(t_bdf[chosen_column]), np.array(t_bdf[target_angle]))
+    fit, errs = curve_fit(momentum_d3pol2, X, t_bdf[target_variable], p0=(1.219, -0.5588, 0.2946, 864.4, -1922, 1055, -2535, 6572, -3751))
+    errs = np.sqrt(np.diag(errs))
+    for param in range(3):
+        fit_params[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][param] = fit[param * 3: param * 3 + 3]
+    chi2 = np.sum((t_bdf[target_variable] - momentum_d3pol2(X, *fit)) ** 2)
 
 
