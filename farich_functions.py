@@ -551,12 +551,6 @@ def recoAngles(edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False):
     else:
         edf['theta_c'] = np.arccos(u[:,2])
         edf['phi_c'] = np.arctan2(-u[:,1], -u[:,0])
-        avg_thetas = []
-        for _, subentry in edf['theta_c'].groupby(level=0):
-            avg_theta = subentry.mean()
-            for __ in subentry:
-                avg_thetas.append(avg_theta)
-        edf['theta_c_mean'] = avg_thetas
 
 
 def local_sum_2d(event, r_slices, t_slices, square_counts, max_index, n, m, timestep, t_window_width, method='N/r'):
