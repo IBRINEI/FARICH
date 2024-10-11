@@ -1237,6 +1237,8 @@ def calibration_loop(
         t_bdf = t_bdf[t_bdf.signal_counts >= 15]
         t_bdf = t_bdf[t_bdf[target_angle] <= theta_intervals[theta_interval_index + 1]]
         t_bdf = t_bdf[t_bdf[target_angle] >= theta_intervals[theta_interval_index]]
+
+        t_bdf = t_bdf[t_bdf[target_variable] >= 0.965]
         # t_bdf = t_bdf[t_bdf[chosen_column] <= 65]
         # t_bdf = t_bdf[t_bdf[chosen_column] >= 25]
 
@@ -1254,6 +1256,7 @@ def calibration_loop(
         errs_tmp[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][
             theta_interval_index
         ] = pol_param_errs
+
         rs = np.linspace(10, 80, num=50)
         chi2 = np.sum(
             (
