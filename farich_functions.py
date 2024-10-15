@@ -1314,3 +1314,14 @@ def param_fit_calibration(
     #         param * 3 : param * 3 + 3
     #     ]
     chi2 = np.sum((t_bdf[target_variable] - param_calibration_func(X, *fit)) ** 2)
+
+
+def rms90(arr):
+    arr = arr.dropna()
+    lower_limit = np.percentile(arr, 5)
+    upper_limit = np.percentile(arr, 95)
+    arr_filtered = arr[(arr >= lower_limit) & (arr <= upper_limit)]
+    assert arr_filtered.shape
+    rms = np.std(arr_filtered)
+
+    return rms
