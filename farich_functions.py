@@ -885,7 +885,7 @@ def rSlidingWindowIntro(
     edf_to_bdf(edf.theta_p, bdf)
     bdf["cos_theta_p"] = np.cos(bdf["theta_p"])
     # edf_to_bdf(edf.signal_counts, bdf)
-    edf_to_bdf(edf.beta, bdf)
+    # edf_to_bdf(edf.beta, bdf)
 
 
 def calculateSignalCounts(edf: pd.DataFrame, bdf: pd.DataFrame):
@@ -1238,7 +1238,7 @@ def calibration_loop(
         t_bdf = t_bdf[t_bdf[target_angle] <= theta_intervals[theta_interval_index + 1]]
         t_bdf = t_bdf[t_bdf[target_angle] >= theta_intervals[theta_interval_index]]
 
-        t_bdf = t_bdf[t_bdf[target_variable] >= 0.965]
+        # t_bdf = t_bdf[t_bdf[target_variable] >= 0.965]
         # t_bdf = t_bdf[t_bdf[chosen_column] <= 65]
         # t_bdf = t_bdf[t_bdf[chosen_column] >= 25]
 
@@ -1304,6 +1304,9 @@ def param_fit_calibration(
     t_bdf = bdf.copy()
     t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
     t_bdf = t_bdf[t_bdf.signal_counts >= 5]
+
+    # t_bdf = t_bdf[t_bdf[target_variable] >= 0.965]
+
     X = (np.array(t_bdf[chosen_column]), np.array(t_bdf[target_angle]))
     fit, errs = curve_fit(param_calibration_func, X, t_bdf[target_variable], p0=p0_c)
     errs = np.sqrt(np.diag(errs))
