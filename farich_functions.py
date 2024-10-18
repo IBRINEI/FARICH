@@ -863,7 +863,6 @@ def rSlidingWindowIntro(
     # Compute beta_step and r_step using NumPy functions
     param_step = np.ptp(edf[what_to_group].values)  # не факт что нужно values
 
-
     # Compute param_group_to_bdf and  using NumPy operations
     param_group = np.floor(
         (
