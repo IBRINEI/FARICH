@@ -848,6 +848,7 @@ def rSlidingWindowIntro(
     t_width_factor=8,
     full_width_t_hist=False,
     num_of_groups=5,
+    what_to_group="beta",
 ):
     r_r_c = edf["rotated_r_c"]
     time_step = float(t_window_width) / t_width_factor
@@ -860,27 +861,22 @@ def rSlidingWindowIntro(
     edf["rotated_r_c_sigm"] = all_sigms
 
     # Compute beta_step and r_step using NumPy functions
-    beta_step = np.ptp(edf["beta"].values)  # не факт что нужно values
+    param_step = np.ptp(edf[what_to_group].values)  # не факт что нужно values
 
-    # Compute beta_intervals using NumPy linspace function
-    num_of_groups = num_of_groups
-    beta_intervals = np.linspace(
-        edf["beta"].min(), edf["beta"].max(), num=num_of_groups
-    )
 
-    # Compute beta_group_to_bdf and  using NumPy operations
-    beta_group = np.floor(
+    # Compute param_group_to_bdf and  using NumPy operations
+    param_group = np.floor(
         (
-            num_of_groups * edf["beta"]
-            + max(edf["beta"])
-            - (num_of_groups + 1) * min(edf["beta"])
+            num_of_groups * edf[what_to_group]
+            + max(edf[what_to_group])
+            - (num_of_groups + 1) * min(edf[what_to_group])
         )
-        / beta_step
+        / param_step
     ).values
 
-    edf["beta_group"] = beta_group
+    edf["param_group"] = param_group
 
-    edf_to_bdf(edf.beta_group, bdf)
+    edf_to_bdf(edf.param_group, bdf)
 
     edf_to_bdf(edf.theta_p, bdf)
     bdf["cos_theta_p"] = np.cos(bdf["theta_p"])
