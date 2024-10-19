@@ -1323,3 +1323,7 @@ def rms90(arr):
     rms = np.std(arr_filtered)
 
     return rms
+
+
+def beta_from_momentum(p, mass):
+    return p / np.sqrt(mass * mass + p * p)
