@@ -1,4 +1,6 @@
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 from scipy.interpolate import griddata
 import os, sys, time
 import uproot3 as uproot
