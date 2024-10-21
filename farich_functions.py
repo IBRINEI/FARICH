@@ -854,13 +854,6 @@ def rSlidingWindowIntro(
 ):
     r_r_c = edf["rotated_r_c"]
     time_step = float(t_window_width) / t_width_factor
-    all_avgs = np.array(r_r_c.groupby(level=0).transform("mean").to_list()).ravel()
-    all_dists = np.abs(r_r_c - all_avgs)
-    all_sigms = np.array(r_r_c.groupby(level=0).transform("std").to_list()).ravel()
-
-    edf["mean_rotated_r_c"] = all_avgs
-    edf["dist_from_mean_rotated_r_c"] = all_dists
-    edf["rotated_r_c_sigm"] = all_sigms
 
     # Compute beta_step and r_step using NumPy functions
     param_step = np.ptp(edf[what_to_group].values)  # не факт что нужно values
