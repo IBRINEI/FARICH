@@ -1319,3 +1319,308 @@ def rms90(arr):
 
 def beta_from_momentum(p, mass):
     return p / np.sqrt(mass * mass + p * p)
+
+
+def betaGroupsRMS90(bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple, n=5):
+    beta_sigms = np.full((np.ptp(avg_sigmas), np.ptp(avg_t_sigmas), n), 0.0)
+    beta_epss = np.full((np.ptp(avg_sigmas), np.ptp(avg_t_sigmas), n), 0.0)
+    beta_sigms_sigms = np.full((np.ptp(avg_sigmas), np.ptp(avg_t_sigmas), n), 0.0)
+
+    masses_mean = np.full((np.ptp(avg_sigmas), np.ptp(avg_t_sigmas), n), 0.0)
+    masses_upper = np.full((np.ptp(avg_sigmas), np.ptp(avg_t_sigmas), n), 0.0)
+    masses_lower = np.full((np.ptp(avg_sigmas), np.ptp(avg_t_sigmas), n), 0.0)
+
+    for group in range(1, n + 1):
+        data = bdf[bdf["param_group"] == group]
+        for i in range(np.ptp(avg_sigmas)):
+            for j in range(np.ptp(avg_t_sigmas)):
+                population_fourth_moment = np.mean(
+                    bdf[
+                        f"delta_beta_{i + avg_sigmas[0]}_rsigms_{j + avg_t_sigmas[0]}_tsigms"
+                    ]
+                    ** 4
+                )
+                sample_fourth_moment = np.mean(
+                    data[
+                        f"delta_beta_{i + avg_sigmas[0]}_rsigms_{j + avg_t_sigmas[0]}_tsigms"
+                    ]
+                    ** 4
+                )
+                # print(np.std(data[f'delta_beta_{i + avg_sigmas[0]}_rsigms_{j + avg_t_sigmas[0]}_tsigms']))
+                beta_sigms[i, j, group - 1] = rms90(
+                    data[
+                        f"delta_beta_{i + avg_sigmas[0]}_rsigms_{j + avg_t_sigmas[0]}_tsigms"
+                    ]
+                )
+                # assert not np.isnan(beta_sigms[i, j, group - 1])
+                beta_epss[i, j, group - 1] = rms90(
+                    data[
+                        f"eps_beta_{i + avg_sigmas[0]}_rsigms_{j + avg_t_sigmas[0]}_tsigms"
+                    ]
+                )
+                beta_sigms_sigms[i, j, group - 1] = np.sqrt(
+                    2
+                    * np.abs(sample_fourth_moment - population_fourth_moment)
+                    / (data.shape[0])
+                )
+
+                masses_mean[i, j, group - 1] = np.mean(
+                    (
+                        data.momentum
+                        / data.beta_from_calc_r_4_rsigms_4_tsigms
+                        * np.sqrt(1 - data.beta_from_calc_r_4_rsigms_4_tsigms**2)
+                    ).dropna()
+                )
+                masses_upper[i, j, group - 1] = (
+                    np.mean(
+                        (
+                            data.momentum
+                            / (
+                                data.beta_from_calc_r_4_rsigms_4_tsigms
+                                - beta_sigms[i, j, group - 1]
+                            )
+                            * np.sqrt(
+                                1
+                                - (
+                                    data.beta_from_calc_r_4_rsigms_4_tsigms
+                                    - beta_sigms[i, j, group - 1]
+                                )
+                                ** 2
+                            )
+                        ).dropna()
+                    )
+                    - masses_mean[i, j, group - 1]
+                )
+                masses_lower[i, j, group - 1] = masses_mean[i, j, group - 1] - np.mean(
+                    (
+                        data.momentum
+                        / (
+                            data.beta_from_calc_r_4_rsigms_4_tsigms
+                            + beta_sigms[i, j, group - 1]
+                        )
+                        * np.sqrt(
+                            1
+                            - (
+                                data.beta_from_calc_r_4_rsigms_4_tsigms
+                                + beta_sigms[i, j, group - 1]
+                            )
+                            ** 2
+                        )
+                    ).dropna()
+                )
+
+    return (
+        beta_sigms,
+        beta_epss,
+        beta_sigms_sigms,
+        masses_mean,
+        masses_upper,
+        masses_lower,
+    )
+
+
+def plot_final_graph(
+    edf,
+    beta_sigms,
+    beta_sigms_yerr,
+    avg_sigmas,
+    avg_t_sigmas,
+    r_width,
+    t_width,
+    r_factor,
+    t_factor,
+    weighed,
+    to_save=True,
+    deg_lim=False,
+    num_of_groups=10,
+    iteration=0,
+):
+    # labels = ['0', '1e3', '1e4', '1e5', '1e6']
+    pi_mass = 139.57
+    mu_mass = 105.65
+    ka_mass = 493.67
+    labels = ["0"]
+    labels = ["DCR = " + i + " $Hz/mm^2$" for i in labels]
+    colors = ["c", "y", "g", "r", "m"]
+    weight = "weighed" if weighed else "unweighed"
+    y = np.arange(1, num_of_groups + 1)
+    x = (
+        y * (max(edf["beta"]) - min(edf["beta"]))
+        - max(edf["beta"])
+        + (num_of_groups + 1) * min(edf["beta"])
+    ) / num_of_groups
+    required_separation = [
+        (beta_from_momentum(momentum_from_beta(b, pi_mass), mu_mass) - b) / 3 for b in x
+    ]
+    fig, axs = plt.subplots(
+        np.ptp(avg_sigmas),
+        np.ptp(avg_t_sigmas),
+        figsize=(10 * np.ptp(avg_t_sigmas), 10 * np.ptp(avg_sigmas)),
+    )
+    title = f"Method: N(r) / r; {weight} Avg\nR Width = {r_width}mm, T Width = {t_width}ns\nR step factor = {r_factor}, T step factor = {t_factor}"
+    if deg_lim:
+        title += "\n" + r"$\theta_p < 10\deg$"
+    # fig.suptitle(title)
+
+    if np.ptp(avg_sigmas) > 1:
+        for i in range(np.ptp(avg_sigmas)):
+            for j in range(np.ptp(avg_t_sigmas)):
+                for k in range(beta_sigms.shape[0]):
+                    axs[i, j].plot(x, beta_sigms[k, i, j], label=labels[k], c=colors[k])
+                    axs[i, j].errorbar(
+                        x,
+                        beta_sigms[k, i, j],
+                        xerr=[np.diff(x)[0] / 4 for _ in x],
+                        linestyle="",
+                        c=colors[k],
+                    )
+                    axs[i, j].errorbar(
+                        x,
+                        beta_sigms[k, i, j],
+                        yerr=beta_sigms_yerr[k, i, j],
+                        linestyle="",
+                        c=colors[k],
+                    )
+                axs[i, j].legend(loc="upper right")
+                axs[i, j].set_xlabel("Beta Group")
+                axs[i, j].set_ylabel(r"RMS90($\Delta\beta$)")
+                axs[i, j].set_ylim((0, 0.004))
+                axs[i, j].set_title(
+                    f"Velocity resoultion for\nr window width = {avg_sigmas[0] + i}$\sigma$\nt window width = {avg_t_sigmas[0] + j}$\sigma$"
+                )
+                axs[i, j].grid()
+    elif np.ptp(avg_t_sigmas) > 1:
+        for j in range(np.ptp(avg_t_sigmas)):
+            for k in range(beta_sigms.shape[0]):
+                axs[j].plot(x, beta_sigms[k, 0, j], label=labels[k], c=colors[k])
+                axs[j].errorbar(
+                    x,
+                    beta_sigms[k, 0, j],
+                    xerr=[np.diff(x)[0] / 4 for _ in x],
+                    linestyle="",
+                    c=colors[k],
+                )
+                axs[j].errorbar(
+                    x,
+                    beta_sigms[k, 0, j],
+                    yerr=beta_sigms_yerr[k, 0, j],
+                    linestyle="",
+                    c=colors[k],
+                )
+            axs[j].legend(loc="upper right")
+            axs[j].set_xlabel("Beta Group")
+            axs[j].set_ylabel(r"RMS90($\Delta\beta)$")
+            axs[j].set_ylim((0, 0.004))
+            axs[j].set_title(
+                f"Velocity resoultion for\nr window width = {avg_sigmas[0]}$\sigma$\nt window width = {avg_t_sigmas[0] + j}$\sigma$"
+            )
+            axs[j].grid()
+    else:
+        for k in range(beta_sigms.shape[0]):
+            axs.plot(x, beta_sigms[k, 0, 0], label=labels[k], c=colors[k])
+            axs.errorbar(
+                x,
+                beta_sigms[k, 0, 0],
+                xerr=[np.diff(x)[0] / 4 for _ in x],
+                linestyle="",
+                c=colors[k],
+            )
+            axs.errorbar(
+                x,
+                beta_sigms[k, 0, 0],
+                yerr=beta_sigms_yerr[k, 0, 0],
+                linestyle="",
+                c=colors[k],
+            )
+            axs.plot(x, required_separation, c="r", linestyle="--")
+        axs.legend(loc="upper right")
+        axs.set_xlabel("Beta Group")
+        axs.set_ylabel(r"RMS90($\Delta\beta$)")
+        # axs.set_ylim((0, 0.002))
+        # revert back
+        axs.set_ylim((0, 0.004))
+
+        axs.set_title(
+            f"Velocity resoultion for\nr window width = {avg_sigmas[0]}$\sigma$\nt window width = {avg_t_sigmas[0]}$\sigma$"
+        )
+        axs.grid()
+
+    if to_save:
+        filename = f"{weight}_avg_rw={r_width}_tw={t_width}_rs={r_factor}_ts={t_factor}_rsigms={avg_sigmas[0]}-{avg_sigmas[-1] - 1}_tsigms={avg_t_sigmas[0]}-{avg_t_sigmas[-1] - 1}"
+        if deg_lim:
+            filename += "_10deg"
+        filename += f"_{iteration}"
+        filename += ".png"
+        fig.savefig(os.path.join("results_barrel", f"{filename}"))
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_final_mass_graph(
+    edf,
+    mass_mean,
+    mass_upper,
+    mass_lower,
+    avg_sigmas,
+    avg_t_sigmas,
+    r_width,
+    t_width,
+    r_factor,
+    t_factor,
+    weighed,
+    to_save=True,
+    deg_lim=False,
+    num_of_groups=10,
+    iteration=0,
+):
+    labels = ["0"]
+    labels = ["DCR = " + i + " $Hz/mm^2$" for i in labels]
+    colors = ["c", "y", "g", "r", "m"]
+    weight = "weighed" if weighed else "unweighed"
+    pi_mass = 139.57
+    mu_mass = 105.65
+    ka_mass = 493.67
+    y = np.arange(1, num_of_groups + 1)
+    x = (
+        y * (max(edf["beta"]) - min(edf["beta"]))
+        - max(edf["beta"])
+        + (num_of_groups + 1) * min(edf["beta"])
+    ) / num_of_groups
+
+    fig, axs = plt.subplots(1, 1, figsize=(10, 10))
+    title = f"Method: N(r) / r; {weight} Avg\nR Width = {r_width}mm, T Width = {t_width}ns\nR step factor = {r_factor}, T step factor = {t_factor}"
+    if deg_lim:
+        title += "\n" + r"$\theta_p < 10\deg$"
+    for k in range(mass_mean.shape[0]):
+        axs.plot(x, mass_mean[k, 0], label=labels[k], c=colors[k])
+        axs.errorbar(
+            x,
+            mass_mean[k, 0],
+            yerr=np.array(list(zip(mass_lower[k, 0], mass_upper[k, 0]))).T,
+            linestyle="",
+            c=colors[k],
+        )
+
+    axs.plot((min(x), max(x)), (pi_mass, pi_mass), linestyle="--", c="red")
+    axs.plot((min(x), max(x)), (mu_mass, mu_mass), linestyle="--", c="red")
+    # axs.plot((min(x), max(x)), (ka_mass, ka_mass), linestyle='--', c='red')
+
+    axs.legend(loc="upper right")
+    axs.set_xlabel("Beta Group")
+    axs.set_ylabel(r"Measured Mass, MeV")
+    axs.set_title(
+        f"Mass resoultion for\nr window width = {avg_sigmas[0]}$\sigma$\nt window width = {avg_t_sigmas[0]}$\sigma$"
+    )
+    axs.grid()
+
+    if to_save:
+        filename = f"{weight}_avg_rw={r_width}_tw={t_width}_rs={r_factor}_ts={t_factor}_rsigms={avg_sigmas[0]}-{avg_sigmas[-1] - 1}_tsigms={avg_t_sigmas[0]}-{avg_t_sigmas[-1] - 1}"
+        if deg_lim:
+            filename += "_10deg"
+        filename += f"_{iteration}"
+        filename += ".png"
+        fig.savefig(os.path.join("results_barrel", f"{filename}"))
+        plt.close(fig)
+    else:
+        plt.show()
