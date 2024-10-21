@@ -906,11 +906,10 @@ def rSlidingWindowLoop1(
 
     r_slices = np.arange(0, 800, step=step)
     t_slices = np.arange(0, 15, step=time_step)
-    phi_slices = np.array([-np.pi, -2.013, -0.671, 0, 0.671, 2.013, np.pi])
 
     n_sigmas = np.ptp(avg_sigmas)
     t_sigmas = np.ptp(avg_t_sigmas)
-    # all_counts_to_edf = np.zeros((n_sigmas, len(edf)))
+
     all_counts_to_edf = np.zeros((n_sigmas, len(edf)))
     all_calculated_r = np.zeros((n_sigmas, len(edf)))
     all_calculated_r_from_2d = np.zeros((t_sigmas, n_sigmas, len(edf)))
@@ -920,10 +919,8 @@ def rSlidingWindowLoop1(
     ):
         if np.cos(subentry.theta_p).iat[0] >= mean_cos_theta_p:
             step = param_step / (r_width_factor + 1)
-            r_slices = np.arange(0, 800, step=step)
         else:
             step = param_step / r_width_factor
-            r_slices = np.arange(0, 800, step=step)
 
         counts = np.zeros(r_slices.shape)
         square_counts = np.zeros(shape=(r_slices.shape[0], t_slices.shape[0]))
