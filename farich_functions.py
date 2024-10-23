@@ -914,6 +914,7 @@ def rSlidingWindowLoop1(
     all_calculated_r = np.zeros((n_sigmas, len(edf)))
     all_calculated_r_from_2d = np.zeros((t_sigmas, n_sigmas, len(edf)))
     cur_ind = 0
+
     for i, (entry, subentry) in enumerate(
         edf[["rotated_r_c", "t_c", "rotated_phi_c", "theta_p"]].groupby(level=0)
     ):
