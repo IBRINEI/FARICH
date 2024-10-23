@@ -918,7 +918,7 @@ def rSlidingWindowLoop1(
         edf[["rotated_r_c", "t_c", "rotated_phi_c", "theta_p"]].groupby(level=0)
     ):
         if np.cos(subentry.theta_p).iat[0] >= mean_cos_theta_p:
-            step = param_step / (r_width_factor + 1)
+            step = param_step / (r_width_factor)
         else:
             step = param_step / r_width_factor
 
