@@ -1198,6 +1198,7 @@ def calibration_loop(
     chosen_column: str,
     r_sigms: int,
     t_sigms: int,
+    param_fit: bool,
     num_of_theta_intervals: int,
     to_return_unbinned: np.ndarray,
     errs_tmp: np.ndarray,
@@ -1240,9 +1241,10 @@ def calibration_loop(
             theta_interval_index
         ] = pol_param
         pol_param_errs = np.sqrt(np.diag(cov))
-        errs_tmp[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][
-            theta_interval_index
-        ] = pol_param_errs
+        if not param_fit:
+            errs_tmp[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][
+                theta_interval_index
+            ] = pol_param_errs
 
         rs = np.linspace(10, 80, num=50)
         chi2 = np.sum(
@@ -1281,6 +1283,7 @@ def param_fit_calibration(
     avg_sigmas,
     avg_t_sigmas,
     fit_params,
+    errs_tmp,
     num_of_calibration_params,
     num_of_param_fit_params,
     target_variable,
@@ -1296,8 +1299,10 @@ def param_fit_calibration(
 
     X = (np.array(t_bdf[chosen_column]), np.array(t_bdf[target_angle]))
     fit, errs = curve_fit(param_calibration_func, X, t_bdf[target_variable], p0=p0_c)
-    errs = np.sqrt(np.diag(errs))
-    print(fit)
+    errs_tmp[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]] = np.sqrt(
+        np.diag(errs)
+    )
+
     fit_params[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]] = fit
     # for param in range(num_of_calibration_params):
     #     fit_params[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][param] = fit[
