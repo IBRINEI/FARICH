@@ -1631,3 +1631,302 @@ def plot_final_mass_graph(
         plt.close(fig)
     else:
         plt.show()
+
+
+def exp_like(x, a, b):
+    return a * np.exp(b * x)
+
+
+def pol2_exp_like(x, a0, a1, a2, b0, b1, b2):
+    r, theta = x
+    return exp_like(r, a0 + a1 * theta + a2 * theta**2, b0 + b1 * theta + b2 * theta**2)
+
+
+def pol3(x, p0, p1, p2, p3):
+    return p0 + p1 * x + p2 * x**2 + p3 * x**3
+
+
+def lin(x, a, b):
+    return a * x + b
+
+
+def pol2_lin(x, a0, a1, a2, b0, b1, b2):
+    r, theta = x
+    return lin(r, a0 + a1 * theta + a2 * theta**2, b0 + b1 * theta + b2 * theta**2)
+
+
+def pol2_pol2(x, a0, a1, a2, b0, b1, b2, c0, c1, c2):
+    r, theta = x
+    return pol2(
+        r,
+        a0 + a1 * theta + a2 * theta**2,
+        b0 + b1 * theta + b2 * theta**2,
+        c0 + c1 * theta + c2 * theta**2,
+    )
+
+
+def calibration(
+    edf: pd.DataFrame,
+    idf: pd.DataFrame,
+    bdf: pd.DataFrame,
+    avg_sigmas: tuple,
+    avg_t_sigmas: tuple,
+    step=3.0,
+    method="N/r",
+    t_window_width=2,
+    r_width_factor=2,
+    t_width_factor=8,
+    full_width_t_hist=False,
+    weighed=True,
+    deg_lim=False,
+    param_fit=False,
+    calibration_func=pol,
+    param_calibration_func=d3pol2,
+    num_of_calibration_params=3,
+    num_of_param_fit_params=3,
+    target_variable="momentum",
+    target_angle="theta_p",
+    num_of_theta_intervals=11,
+    p0=(100, 1, 100),
+    p0_c=(1.219, -0.5588, 0.2946, 864.4, -1922, 1055, -2535, 6572, -3751),
+):
+    to_return_unbinned = np.full(
+        (
+            np.ptp(avg_sigmas),
+            np.ptp(avg_t_sigmas),
+            num_of_theta_intervals - 1,
+            num_of_calibration_params,
+        ),
+        0.0,
+    )
+    errs_tmp = np.full(
+        (
+            np.ptp(avg_sigmas),
+            np.ptp(avg_t_sigmas),
+            num_of_theta_intervals - 1,
+            num_of_calibration_params,
+        ),
+        0.0,
+    )
+
+    fit_params = np.full(
+        (
+            np.ptp(avg_sigmas),
+            np.ptp(avg_t_sigmas),
+            num_of_calibration_params * num_of_param_fit_params,
+        ),
+        0.0,
+    )
+    errs_pararm_fit = np.full(
+        (
+            np.ptp(avg_sigmas),
+            np.ptp(avg_t_sigmas),
+            num_of_calibration_params * num_of_param_fit_params,
+        ),
+        0.0,
+    )
+
+    dir_to_save = f"{'weighed' if weighed else 'unweighed'}_rw={step}_tw={t_window_width}_rs={r_width_factor}_ts={t_width_factor}"
+    if not os.path.exists(os.path.join("calibrations_barrel", dir_to_save)):
+        os.mkdir(os.path.join("calibrations_barrel", dir_to_save))
+
+    for r_sigms in range(*avg_sigmas):
+        fig, axs = plt.subplots(
+            num_of_theta_intervals - 1,
+            np.ptp(avg_t_sigmas),
+            figsize=(16 * np.ptp(avg_t_sigmas), 9 * (num_of_theta_intervals - 1)),
+        )
+        for t_sigms in range(*avg_t_sigmas):
+            chosen_column = f"unfixed_calculated_r_2d_{r_sigms}_rsigms_{t_sigms}_tsigms"
+
+            calibration_loop(
+                bdf,
+                chosen_column,
+                r_sigms,
+                t_sigms,
+                param_fit,
+                num_of_theta_intervals,
+                to_return_unbinned,
+                errs_tmp,
+                fig,
+                axs,
+                avg_sigmas,
+                avg_t_sigmas,
+                target_variable,
+                target_angle,
+                calibration_func,
+                p0,
+            )
+            if param_fit:
+                param_fit_calibration(
+                    bdf,
+                    chosen_column,
+                    r_sigms,
+                    t_sigms,
+                    avg_sigmas,
+                    avg_t_sigmas,
+                    fit_params,
+                    errs_pararm_fit,
+                    num_of_calibration_params,
+                    num_of_param_fit_params,
+                    target_variable,
+                    target_angle,
+                    param_calibration_func,
+                    p0_c=p0_c,
+                )
+        save_calibration_plot(fig, dir_to_save, deg_lim, r_sigms, avg_t_sigmas)
+
+    if param_fit:
+        return fit_params, errs_pararm_fit
+    return to_return_unbinned, errs_tmp
+
+
+def rSlidingWindow(
+    edf: pd.DataFrame,
+    idf: pd.DataFrame,
+    bdf: pd.DataFrame,
+    avg_sigmas: tuple,
+    avg_t_sigmas: tuple,
+    step=3.0,
+    method="N/r",
+    cal_arr=False,
+    t_window_width=2,
+    r_width_factor=2,
+    t_width_factor=8,
+    full_width_t_hist=True,
+    num_of_groups=5,
+    weighed=True,
+    deg_lim=False,
+    param_fit=False,
+    calibration_func=pol,
+    param_calibration_func=d3pol2,
+    num_of_calibration_params=3,
+    num_of_param_fit_params=3,
+    target_variable="beta",
+    target_angle="cos_theta_p",
+    num_of_theta_intervals=11,
+    p0=(100, 1, 100),
+    p0_c=(1.219, -0.5588, 0.2946, 864.4, -1922, 1055, -2535, 6572, -3751),
+    what_to_group="beta",
+):
+    """
+    Applies a sliding window approach to calculate effective radius of a Cherenkov circle.
+    Applies a calibration method to calculate beta of primary particle.
+
+    Parameters:
+    - edf (pd.DataFrame): Full data frame containing hit data to be processed.
+    - idf (pd.DataFrame): Data frame containing geometry and detector information.
+    - bdf (pd.DataFrame): Compact data frame containing general information about events.
+    - avg_sigmas (tuple): How many radius window widths are used for averaging (min, max + 1).
+    - avg_t_sigmas (tuple): How many time window widths are used for averaging (min, max + 1).
+    - step (float): Step size for the sliding window, defaults to 3.
+    - method (str): Radius calculation method, default is 'N/r'.
+    - cal_arr (bool): Indicates if a calibration array is provided; if False, calibration is performed.
+    - t_window_width (int): Temporal window width for averaging.
+    - r_width_factor (int): Radial window width factor.
+    - t_width_factor (int): Temporal width factor for windowing.
+    - full_width_t_hist (bool): Flag for using full-width histogram in calculations.
+    - num_of_groups (int): Number of groups for data partitioning.
+    - weighed (bool): Whether to apply weighting in radius calculations.
+    - deg_lim (bool): Limit theta_p at 10 degrees.
+    - param_fit (bool): Flag to enable parameter fitting in calibration.
+    - calibration_func (callable): Function used for calibration.
+    - param_calibration_func (callable): Function for parameterized calibration.
+    - num_of_calibration_params (int): Number of parameters for calibration.
+    - num_of_param_fit_params (int): Number of parameters for parameter fitting.
+    - target_variable (str): Variable of interest in the calibration, default is 'beta'.
+    - target_angle (str): Target angle variable, default is 'cos_theta_p'.
+    - num_of_theta_intervals (int): Number of theta intervals for non-param-fit calibration.
+    - p0 (tuple): Initial parameter values for calibration function.
+    - p0_c (tuple): Initial parameter values for parameterized calibration function.
+    - what_to_group (str): Variable used for grouping, default is 'beta'.
+
+    Returns:
+    - tuple: A tuple containing the calibration array (`cal_arr`) and error values (`errs`).
+    """
+    rSlidingWindowIntro(
+        edf,
+        idf,
+        bdf,
+        avg_sigmas,
+        avg_t_sigmas,
+        step=step,
+        method=method,
+        cal_arr=cal_arr,
+        t_window_width=t_window_width,
+        r_width_factor=r_width_factor,
+        t_width_factor=t_width_factor,
+        num_of_groups=num_of_groups,
+        what_to_group=what_to_group,
+    )
+    rSlidingWindowLoop1(
+        edf,
+        idf,
+        bdf,
+        avg_sigmas,
+        avg_t_sigmas,
+        step=step,
+        method=method,
+        cal_arr=cal_arr,
+        t_window_width=t_window_width,
+        r_width_factor=r_width_factor,
+        t_width_factor=t_width_factor,
+        full_width_t_hist=full_width_t_hist,
+        weighed=weighed,
+    )
+
+    bdf.dropna(
+        subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
+        inplace=True,
+    )
+    edf.dropna(
+        subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
+        inplace=True,
+    )
+
+    if cal_arr is False:
+        cal_arr, errs = calibration(
+            edf,
+            idf,
+            bdf,
+            avg_sigmas=avg_sigmas,
+            avg_t_sigmas=avg_t_sigmas,
+            step=step,
+            t_window_width=t_window_width,
+            r_width_factor=r_width_factor,
+            t_width_factor=t_width_factor,
+            weighed=weighed,
+            deg_lim=deg_lim,
+            param_fit=param_fit,
+            calibration_func=calibration_func,
+            param_calibration_func=param_calibration_func,
+            num_of_calibration_params=num_of_calibration_params,
+            num_of_param_fit_params=num_of_param_fit_params,
+            target_variable=target_variable,
+            target_angle=target_angle,
+            num_of_theta_intervals=num_of_theta_intervals,
+            p0=p0,
+            p0_c=p0_c,
+        )
+
+    rSlidingWindowLoop2(
+        edf,
+        idf,
+        bdf,
+        avg_sigmas,
+        avg_t_sigmas,
+        step=step,
+        method=method,
+        cal_arr=cal_arr,
+        t_window_width=t_window_width,
+        r_width_factor=r_width_factor,
+        t_width_factor=t_width_factor,
+        param_fit=param_fit,
+        calibration_func=calibration_func,
+        param_calibration_func=param_calibration_func,
+        target_variable=target_variable,
+        target_angle=target_angle,
+        num_of_theta_intervals=num_of_theta_intervals,
+    )
+
+    return cal_arr, errs
