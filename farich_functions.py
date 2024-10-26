@@ -1106,7 +1106,9 @@ def rSlidingWindowLoop2(
                     meas_beta, subentry.shape[0]
                 )
                 cur_ind += subentry.shape[0]
-            edf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] = meas_betas
+            edf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] = np.clip(
+                meas_betas, a_min=None, a_max=0.9957
+            )
             edf[f"delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms"] = (
                 edf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] - edf["beta"]
             )
@@ -1283,7 +1285,7 @@ def param_fit_calibration(
     avg_sigmas,
     avg_t_sigmas,
     fit_params,
-    errs_tmp,
+    errs_pararm_fit,
     num_of_calibration_params,
     num_of_param_fit_params,
     target_variable,
@@ -1299,7 +1301,7 @@ def param_fit_calibration(
 
     X = (np.array(t_bdf[chosen_column]), np.array(t_bdf[target_angle]))
     fit, errs = curve_fit(param_calibration_func, X, t_bdf[target_variable], p0=p0_c)
-    errs_tmp[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]] = np.sqrt(
+    errs_pararm_fit[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]] = np.sqrt(
         np.diag(errs)
     )
 
