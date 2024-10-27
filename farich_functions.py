@@ -15,6 +15,7 @@ import warnings
 from time import perf_counter
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import cdist
+from xgboost import XGBRegressor
 
 plt.style.use("default")
 
@@ -1689,6 +1690,7 @@ def calibration(
     num_of_theta_intervals=11,
     p0=(100, 1, 100),
     p0_c=(1.219, -0.5588, 0.2946, 864.4, -1922, 1055, -2535, 6572, -3751),
+    use_decision_tree=False,
 ):
     to_return_unbinned = np.full(
         (
@@ -1724,6 +1726,15 @@ def calibration(
             num_of_calibration_params * num_of_param_fit_params,
         ),
         0.0,
+    )
+
+    models = np.full(
+        (
+            np.ptp(avg_sigmas),
+            np.ptp(avg_t_sigmas),
+        ),
+        None,
+        dtype=object,
     )
 
     dir_to_save = f"{'weighed' if weighed else 'unweighed'}_rw={step}_tw={t_window_width}_rs={r_width_factor}_ts={t_width_factor}"
@@ -1774,11 +1785,81 @@ def calibration(
                     param_calibration_func,
                     p0_c=p0_c,
                 )
+            if use_decision_tree:
+                boost_calibraion(
+                    bdf,
+                    chosen_column,
+                    r_sigms,
+                    t_sigms,
+                    avg_sigmas,
+                    avg_t_sigmas,
+                    models,
+                    target_variable,
+                    target_angle,
+                )
         save_calibration_plot(fig, dir_to_save, deg_lim, r_sigms, avg_t_sigmas)
-
+    if use_decision_tree:
+        print(models)
+        return models, errs_pararm_fit  # TODO errors
     if param_fit:
         return fit_params, errs_pararm_fit
     return to_return_unbinned, errs_tmp
+
+
+def boost_calibraion(
+    bdf: pd.DataFrame,
+    chosen_column: str,
+    r_sigms: int,
+    t_sigms: int,
+    avg_sigmas,
+    avg_t_sigmas,
+    models,
+    target_variable,
+    target_angle,
+):
+    t_bdf = bdf.copy()
+    t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
+    t_bdf = t_bdf[t_bdf.signal_counts >= 5]
+
+    # Define features and target
+    X = t_bdf[[chosen_column, target_angle]]
+    y = t_bdf[target_variable]
+
+    # Initialize and fit the XGBoost regressor
+    xgb_model = XGBRegressor(
+        objective="reg:squarederror", n_estimators=100, learning_rate=0.1
+    )
+    xgb_model.fit(X, y)
+
+    # Store fitted model and error
+    models[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]] = xgb_model
+
+
+def rSlidingWindowLoop2Boosted(
+    bdf: pd.DataFrame,
+    avg_sigmas: tuple,
+    avg_t_sigmas: tuple,
+    models: np.ndarray,
+    target_angle="theta_p",
+):
+    for n_sigms in range(*avg_sigmas):
+        for t_sigms in range(*avg_t_sigmas):
+            chosen_column = f"unfixed_calculated_r_2d_{n_sigms}_rsigms_{t_sigms}_tsigms"
+            X = bdf[[chosen_column, target_angle]]
+            print(models[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]])
+            print(models)
+            meas_betas = models[n_sigms - avg_sigmas[0]][
+                t_sigms - avg_t_sigmas[0]
+            ].predict(X)
+            bdf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] = np.clip(
+                meas_betas, a_min=None, a_max=0.9957
+            )
+            bdf[f"delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms"] = (
+                bdf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] - bdf["beta"]
+            )
+            bdf[f"eps_beta_{n_sigms}_rsigms_{t_sigms}_tsigms"] = (
+                bdf[f"delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms"] / bdf["beta"] * 100
+            )
 
 
 def rSlidingWindow(
@@ -1808,6 +1889,7 @@ def rSlidingWindow(
     p0=(100, 1, 100),
     p0_c=(1.219, -0.5588, 0.2946, 864.4, -1922, 1055, -2535, 6572, -3751),
     what_to_group="beta",
+    use_decision_tree=False,
 ):
     """
     Applies a sliding window approach to calculate effective radius of a Cherenkov circle.
@@ -1907,26 +1989,35 @@ def rSlidingWindow(
             num_of_theta_intervals=num_of_theta_intervals,
             p0=p0,
             p0_c=p0_c,
+            use_decision_tree=use_decision_tree,
         )
-
-    rSlidingWindowLoop2(
-        edf,
-        idf,
-        bdf,
-        avg_sigmas,
-        avg_t_sigmas,
-        step=step,
-        method=method,
-        cal_arr=cal_arr,
-        t_window_width=t_window_width,
-        r_width_factor=r_width_factor,
-        t_width_factor=t_width_factor,
-        param_fit=param_fit,
-        calibration_func=calibration_func,
-        param_calibration_func=param_calibration_func,
-        target_variable=target_variable,
-        target_angle=target_angle,
-        num_of_theta_intervals=num_of_theta_intervals,
-    )
+    if use_decision_tree:
+        rSlidingWindowLoop2Boosted(
+            bdf,
+            avg_sigmas,
+            avg_t_sigmas,
+            cal_arr,
+            target_angle=target_angle,
+        )
+    else:
+        rSlidingWindowLoop2(
+            edf,
+            idf,
+            bdf,
+            avg_sigmas,
+            avg_t_sigmas,
+            step=step,
+            method=method,
+            cal_arr=cal_arr,
+            t_window_width=t_window_width,
+            r_width_factor=r_width_factor,
+            t_width_factor=t_width_factor,
+            param_fit=param_fit,
+            calibration_func=calibration_func,
+            param_calibration_func=param_calibration_func,
+            target_variable=target_variable,
+            target_angle=target_angle,
+            num_of_theta_intervals=num_of_theta_intervals,
+        )
 
     return cal_arr, errs
