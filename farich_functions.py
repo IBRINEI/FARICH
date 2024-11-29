@@ -1,7 +1,7 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from scipy.interpolate import griddata
+from scipy.interpolate import griddata, CubicSpline
 import os, sys, time
 import uproot3 as uproot
 import numpy as np
@@ -16,6 +16,7 @@ from time import perf_counter
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import cdist
 from xgboost import XGBRegressor
+from sklearn.preprocessing import QuantileTransformer
 
 plt.style.use("default")
 
@@ -807,7 +808,7 @@ def local_weighed_sum(r_slices, counts, max_index, n, method="N/r"):
 
 
 def pol(x, a, b, c):
-    return a * np.exp((x - b) ** 2 / c**2)
+    return a * np.exp(((x - b) ** 2) / c**2)
 
 
 def pol2(x, p0, p1, p2):
@@ -1225,7 +1226,7 @@ def calibration_loop(
     for theta_interval_index in range(num_of_theta_intervals - 1):
         t_bdf = bdf.copy()
         t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
-        t_bdf = t_bdf[t_bdf.signal_counts >= 15]
+        t_bdf = t_bdf[t_bdf.signal_counts >= 15]  # 15
         t_bdf = t_bdf[t_bdf[target_angle] <= theta_intervals[theta_interval_index + 1]]
         t_bdf = t_bdf[t_bdf[target_angle] >= theta_intervals[theta_interval_index]]
 
@@ -1237,9 +1238,10 @@ def calibration_loop(
             calibration_func,
             t_bdf[chosen_column],
             t_bdf[target_variable],
-            maxfev=500000,
+            maxfev=50000000,
             p0=p0,
         )
+        # cs = CubicSpline(t_bdf[chosen_column], t_bdf[target_variable])
         to_return_unbinned[r_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]][
             theta_interval_index
         ] = pol_param
@@ -1638,6 +1640,10 @@ def exp_like(x, a, b):
     return a * np.exp(b * x)
 
 
+def exp_like_3param(x, a, b, c):
+    return a * np.exp((x - b) / c)
+
+
 def pol2_exp_like(x, a0, a1, a2, b0, b1, b2):
     r, theta = x
     return exp_like(r, a0 + a1 * theta + a2 * theta**2, b0 + b1 * theta + b2 * theta**2)
@@ -1817,7 +1823,8 @@ def boost_calibraion(
     target_variable,
     target_angle,
 ):
-    t_bdf = bdf.copy()
+    t_bdf = bdf.sample(frac=0.8, random_state=42).copy()
+    print(t_bdf.index)
     t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
     t_bdf = t_bdf[t_bdf.signal_counts >= 5]
 
@@ -1846,13 +1853,11 @@ def rSlidingWindowLoop2Boosted(
         for t_sigms in range(*avg_t_sigmas):
             chosen_column = f"unfixed_calculated_r_2d_{n_sigms}_rsigms_{t_sigms}_tsigms"
             X = bdf[[chosen_column, target_angle]]
-            print(models[n_sigms - avg_sigmas[0]][t_sigms - avg_t_sigmas[0]])
-            print(models)
             meas_betas = models[n_sigms - avg_sigmas[0]][
                 t_sigms - avg_t_sigmas[0]
             ].predict(X)
             bdf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] = np.clip(
-                meas_betas, a_min=None, a_max=0.9957
+                meas_betas, a_min=None, a_max=1  # 0.9957
             )
             bdf[f"delta_beta_{n_sigms}_rsigms_{t_sigms}_tsigms"] = (
                 bdf[f"beta_from_calc_r_{n_sigms}_rsigms_{t_sigms}_tsigms"] - bdf["beta"]
@@ -1965,6 +1970,14 @@ def rSlidingWindow(
         subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
         inplace=True,
     )
+    quantile_transformer = QuantileTransformer(
+        output_distribution="uniform", random_state=0
+    )
+    # bdf[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"] = (
+    #     quantile_transformer.fit_transform(
+    #         bdf[[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"]]
+    #     )
+    # )
 
     if cal_arr is False:
         cal_arr, errs = calibration(
