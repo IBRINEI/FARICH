@@ -626,6 +626,10 @@ def primaryDirectionRecalculation(edf: pd.DataFrame):
     edf["recalculated_ny_p"] = M[:, 1]
     edf["recalculated_nz_p"] = M[:, 2]
     edf["theta_p"] = theta_ps
+    edf["rotated_r_c"] = np.sqrt(
+        (edf["rotated_x_i"] - edf["rotated_x"]) ** 2
+        + (edf["rotated_y_i"] - edf["rotated_y"]) ** 2
+    )
 
 
 def recoAngles(edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False):
@@ -882,7 +886,7 @@ def rSlidingWindowIntro(
 
 def calculateSignalCounts(edf: pd.DataFrame, bdf: pd.DataFrame):
     signal_counts = edf["signal"].groupby(level=0).sum()
-    bdf["signal_counts"] = signal_counts.values
+    bdf["signal_counts"] = bdf["nhits"]
     edf["signal_counts"] = edf.signal.groupby(level=0).transform("sum").values
 
 
@@ -1373,7 +1377,6 @@ def betaGroupsRMS90(bdf: pd.DataFrame, avg_sigmas: tuple, avg_t_sigmas: tuple, n
                     * np.abs(sample_fourth_moment - population_fourth_moment)
                     / (data.shape[0])
                 )
-
                 masses_mean[i, j, group - 1] = np.mean(
                     (
                         data.momentum
@@ -1440,6 +1443,7 @@ def plot_final_graph(
     r_factor,
     t_factor,
     weighed,
+    labels=["0"],
     to_save=True,
     deg_lim=False,
     num_of_groups=10,
@@ -1449,7 +1453,7 @@ def plot_final_graph(
     pi_mass = 139.57
     mu_mass = 105.65
     ka_mass = 493.67
-    labels = ["0"]
+    # labels = ["0"]
     labels = ["DCR = " + i + " $Hz/mm^2$" for i in labels]
     colors = ["c", "y", "g", "r", "m"]
     weight = "weighed" if weighed else "unweighed"
@@ -1805,7 +1809,7 @@ def calibration(
                 )
         save_calibration_plot(fig, dir_to_save, deg_lim, r_sigms, avg_t_sigmas)
     if use_decision_tree:
-        print(models)
+        # print(models)
         return models, errs_pararm_fit  # TODO errors
     if param_fit:
         return fit_params, errs_pararm_fit
@@ -1824,7 +1828,7 @@ def boost_calibraion(
     target_angle,
 ):
     t_bdf = bdf.sample(frac=0.8, random_state=42).copy()
-    print(t_bdf.index)
+    # print(t_bdf.index)
     t_bdf = t_bdf[np.isfinite(t_bdf[chosen_column])]
     t_bdf = t_bdf[t_bdf.signal_counts >= 5]
 
@@ -1876,6 +1880,7 @@ def rSlidingWindow(
     step=3.0,
     method="N/r",
     cal_arr=False,
+    errs=False,
     t_window_width=2,
     r_width_factor=2,
     t_width_factor=8,
