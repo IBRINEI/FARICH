@@ -734,7 +734,7 @@ def recoAngles(edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False):
 
     # сферические углы фотона в СК частицы
     if rotation_mode:
-        edf["rotated_theta_c"] = np.arccos(u[:, 2])
+        # edf["rotated_theta_c"] = np.arccos(u[:, 2])
         edf["rotated_phi_c"] = np.arctan2(-u[:, 1], -u[:, 0])
     else:
         edf["theta_c"] = np.arccos(u[:, 2])
@@ -886,7 +886,7 @@ def rSlidingWindowIntro(
 
 def calculateSignalCounts(edf: pd.DataFrame, bdf: pd.DataFrame):
     signal_counts = edf["signal"].groupby(level=0).sum()
-    bdf["signal_counts"] = bdf["nhits"]
+    bdf["signal_counts"] = signal_counts.values
     edf["signal_counts"] = edf.signal.groupby(level=0).transform("sum").values
 
 
@@ -1900,6 +1900,7 @@ def rSlidingWindow(
     p0_c=(1.219, -0.5588, 0.2946, 864.4, -1922, 1055, -2535, 6572, -3751),
     what_to_group="beta",
     use_decision_tree=False,
+    dcr=0,
 ):
     """
     Applies a sliding window approach to calculate effective radius of a Cherenkov circle.
@@ -1966,15 +1967,15 @@ def rSlidingWindow(
         full_width_t_hist=full_width_t_hist,
         weighed=weighed,
     )
-
-    bdf.dropna(
-        subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
-        inplace=True,
-    )
-    edf.dropna(
-        subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
-        inplace=True,
-    )
+    if dcr < 1e5:
+        bdf.dropna(
+            subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
+            inplace=True,
+        )
+        edf.dropna(
+            subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
+            inplace=True,
+        )
     quantile_transformer = QuantileTransformer(
         output_distribution="uniform", random_state=0
     )
