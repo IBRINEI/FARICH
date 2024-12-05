@@ -1548,8 +1548,9 @@ def plot_final_graph(
             )
             axs.plot(x, required_separation, c="r", linestyle="--")
             required_separation = [
-        (beta_from_momentum(momentum_from_beta(b, pi_mass), mu_mass) - b) / 2 for b in x
-    ]
+                (beta_from_momentum(momentum_from_beta(b, pi_mass), mu_mass) - b) / 2
+                for b in x
+            ]
         axs.plot(x, required_separation, c="b", linestyle="--")
         axs.legend(loc="upper right")
         axs.set_xlabel("Beta Group")
