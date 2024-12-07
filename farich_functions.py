@@ -20,6 +20,7 @@ from sklearn.preprocessing import QuantileTransformer
 
 plt.style.use("default")
 
+rng = np.random.default_rng(12345)
 SIPM_GEOMETRIC_EFFICIENCY = 0.85
 SIPM_CELL_SIZE = 3.36
 plane_angles = np.array(
@@ -2045,3 +2046,105 @@ def rSlidingWindow(
         )
 
     return cal_arr, errs
+
+
+def init_coords(file, MAXIMUM_EVENT_GROUP_NUMBER, grid):
+    x = np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['FarichBarrelG4Hits.postStepPosition.x'].array())
+    y = np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['FarichBarrelG4Hits.postStepPosition.y'].array())
+    z = np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['FarichBarrelG4Hits.postStepPosition.z'].array())
+    wvs = 1239.841 / np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['FarichBarrelG4Hits.energy'].array()) * 1e-9
+    x3 = np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['allGenParticles.core.p4.px'].array())
+    y3 = np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['allGenParticles.core.p4.py'].array())
+    z3 = np.array(file[f'events;{MAXIMUM_EVENT_GROUP_NUMBER}']['allGenParticles.core.p4.pz'].array())
+    true_direction_coordinates = np.column_stack((x3, y3, z3))
+    for i in range(len(wvs)):
+        wvs[i] = lin_move_to_grid(wvs[i], grid[2])
+    coordinates = np.column_stack((x, y, z, wvs))
+    return coordinates, true_direction_coordinates
+
+
+def init_sipm_eff():
+    pdes_tmp = pd.read_csv('PDE.csv', sep=';', names=['A'])
+    t1 = []
+    t2 = []
+    for inedx, row in pdes_tmp.iterrows():
+        t1.append(float(row['A'].split(';')[0].replace(',', '.')))
+        t2.append(float(row['A'].split(';')[1].replace(',', '.')))
+    PDE_wvs = np.linspace(200, 900, 128)
+    PDEs = np.interp(PDE_wvs, t1, t2, left=0, right=0)
+    sipm_eff = fix_PDE_plot(PDEs, PDE_wvs)
+    return sipm_eff, PDE_wvs
+
+
+def addNoise(idf: pd.DataFrame, edf: pd.DataFrame, bdf: pd.DataFrame, noiseTimeRange, noisefreqpersqmm,
+             shiftSignalTimes=True):
+    x_grid = np.arange(-250, 250, SIPM_CELL_SIZE)
+    y_grid = np.arange(-250, 250, SIPM_CELL_SIZE)
+
+    nevents = bdf.shape[0]
+    munoise = (noiseTimeRange[1] - noiseTimeRange[0]) * 1e-9 * noisefreqpersqmm * (500 ** 2)
+
+    print(f'    Generate noise with DCR per mm^2 {noisefreqpersqmm}, mean number of hits per event: {munoise:.2f}.',
+          end='\n')
+
+    noisehits = rng.poisson(munoise,
+                            nevents)  # генерация массива числа шумовых срабатываний в событиях по пуассоновскому распределению
+    Ndc = int(noisehits.sum())  # общее число шумовых срабатываний (скаляр)
+    signalhits = bdf['nhits']  # массив числа сигнальных срабатываний по событиям
+
+    # случайное смещение сигнальных срабатываний в пределах временного окна генерации шума
+    if shiftSignalTimes:
+        edf['t_c'] += np.repeat(rng.uniform(0, noiseTimeRange[1] - 2, nevents), bdf['nhits'])
+
+    edf['signal'] = np.ones(signalhits.sum(), bool)  # разметка сигнальных срабатываний значением 'signal' True
+    if Ndc == 0:  # если нет шумовых срабатываний
+        return edf  # возвращаем исходный датафрейм с добавлением колонки 'signal'
+
+    xich = rng.choice(x_grid.size, Ndc)  # генерация случайных номеров сработавших каналов с возможным повтором
+    yich = rng.choice(y_grid.size, Ndc)  # генерация случайных номеров сработавших каналов с возможным повтором
+
+    xh = x_grid[xich]  # x-координата сработавших каналов
+    yh = y_grid[yich]  # y-координата сработавших каналов
+    zh = 2000.0  # z-координата срабатываний (скаляр)
+    th = rng.uniform(noiseTimeRange[0], noiseTimeRange[1],
+                     size=Ndc)  # генерация времён срабатываний по однородному распределению
+
+    # нумерация шумовых срабатываний по событиям
+    ievent = np.repeat(bdf.index, noisehits)  # массив номеров событий для записи в датафрейм
+    ihit = np.zeros(Ndc, 'int64')  # инициализация массива номеров срабатываний для записи в датафрейм
+    index = 0
+    for i in range(nevents):
+        ihit[index:index + noisehits[i]] = signalhits[i] + np.arange(noisehits[i])
+        index += noisehits[i]
+
+    # создание датафрейма с шумовыми срабатываниями того же формата, что hitdf
+    noisedf = pd.DataFrame({'x_cn': xh, 'y_cn': yh, 'z_c': zh, 't_c': th, 'signal': np.zeros(Ndc, bool)},
+                           index=pd.MultiIndex.from_arrays((ievent, ihit), names=('entry', 'subentry')))
+
+    # TO DO: случайное смещение кольца в фотодетекторе (сдвиг координат сигнальных хитов).
+    # Сложность с реализацией для неравномерной сетки пикселей, т.к. зазоры между матрицами больше зазоров между пикселями в матрице.
+    # Проще сделать в моделировании.
+
+    # сливаем сигнальный и шумовой датафрейм и сортируем указатель событий и срабатываний
+    hitdf2 = pd.concat((edf, noisedf), copy=False).sort_index(level=('entry', 'subentry'))
+
+    columns_to_fill = ['x_i', 'y_i', 'true_p', 'beta', 'x_p', 'y_p', 'z_p', 'nx_p', 'ny_p', 'nz_p']
+
+    hitdf2[columns_to_fill] = hitdf2.groupby(level='entry')[columns_to_fill].apply(
+        lambda group: group.ffill()).reset_index(level=0, drop=True)
+
+    hitdf2['x_c'] = hitdf2.groupby(level='entry').apply(
+        lambda group: group['x_c'].combine_first(
+            group['x_cn'] + group['x_i']
+        )).reset_index(level=0, drop=True)
+    hitdf2['y_c'] = hitdf2.groupby(level='entry').apply(
+        lambda group: group['y_c'].combine_first(
+            group['y_cn'] + group['y_i']
+        )).reset_index(level=0, drop=True)
+
+    hitdf2.drop(['x_cn', 'y_cn'], axis=1, inplace=True)
+
+    # обновляем количества срабатываний в partdf, добавляя количества шумовых срабатываний по событиям
+    bdf['sum_hits'] = bdf['nhits'] + noisehits
+
+    return hitdf2
