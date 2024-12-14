@@ -2236,8 +2236,13 @@ def addNoise(
 
 def uncertainty_introduction_to_direction(true_direction_coordinates):
     for i in range(true_direction_coordinates.shape[0]):
-        n = np.array([true_direction_coordinates[i][0][0], true_direction_coordinates[i][1][0],
-                      true_direction_coordinates[i][2][0]])
+        n = np.array(
+            [
+                true_direction_coordinates[i][0][0],
+                true_direction_coordinates[i][1][0],
+                true_direction_coordinates[i][2][0],
+            ]
+        )
         n_magnitude = np.linalg.norm(n)
 
         # Угол с осью z
