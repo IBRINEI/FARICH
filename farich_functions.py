@@ -2232,3 +2232,39 @@ def addNoise(
     bdf["sum_hits"] = bdf["nhits"] + noisehits
 
     return hitdf2
+
+
+def uncertainty_introduction_to_direction(true_direction_coordinates):
+    for i in range(true_direction_coordinates.shape[0]):
+        n = np.array([true_direction_coordinates[i][0][0], true_direction_coordinates[i][1][0],
+                      true_direction_coordinates[i][2][0]])
+        n_magnitude = np.linalg.norm(n)
+
+        # Угол с осью z
+        dot_product = np.dot(n, [0, 0, 1.0])
+        cos_theta = dot_product / n_magnitude  # |z| = 1
+        theta = np.arccos(cos_theta)
+
+        # Добавляем случайную ошибку в угол (±1%)
+        sigma = 0.001
+        delta_theta = np.random.normal(0, sigma)
+        theta_prime = theta + delta_theta
+
+        # Новое значение cos(theta')
+        cos_theta_prime = np.cos(theta_prime)
+
+        # Сохраняем азимутальный угол phi
+        phi = np.arctan2(n[1], n[0])
+
+        # Новые координаты вектора
+        n_prime = np.zeros(3)
+        n_prime[0] = n_magnitude * np.sin(theta_prime) * np.cos(phi)
+        n_prime[1] = n_magnitude * np.sin(theta_prime) * np.sin(phi)
+        n_prime[2] = n_magnitude * np.cos(theta_prime)
+        if np.abs(true_direction_coordinates[i][0][0] - n_prime[0]) > 0.2:
+            print(i)
+            break
+
+        true_direction_coordinates[i][0][0] = n_prime[0]
+        true_direction_coordinates[i][1][0] = n_prime[1]
+        true_direction_coordinates[i][2][0] = n_prime[2]
