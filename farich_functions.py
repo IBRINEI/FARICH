@@ -531,7 +531,7 @@ def planeRecalculation(edf: pd.DataFrame, idf: pd.DataFrame):
 
     speedOfLight_mmperns = 299.792458
     t_dif = np.sqrt(np.sum((R_new - R) ** 2, axis=1)) / speedOfLight_mmperns
-    # edf["t_c"] = edf["t_c"] + np.sign(R_new[:, 2] - R[:, 2]) * t_dif
+    edf["t_c"] = edf["t_c"] + np.sign(R_new[:, 2] - R[:, 2]) * t_dif
 
     edf["recalculated_x"] = R_new[:, 0]
     edf["recalculated_y"] = R_new[:, 1]
