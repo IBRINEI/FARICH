@@ -2273,3 +2273,184 @@ def uncertainty_introduction_to_direction(true_direction_coordinates):
         true_direction_coordinates[i][0][0] = n_prime[0]
         true_direction_coordinates[i][1][0] = n_prime[1]
         true_direction_coordinates[i][2][0] = n_prime[2]
+
+
+def create_edf(
+    filepath_to_first="fullsim_optical_2000_pi_bin_1_FARICH_35mm_no_no_trackers.root",
+    sample_num=None,
+    uncertain_angle=False,
+    is_mu=False,
+):
+    datadir = "data"
+    sipm_eff, PDE_wvs = init_sipm_eff()
+    for key in sipm_eff.keys():
+        sipm_eff[key] = sipm_eff[key] / 0.55414 * 0.38
+
+    x_grid = np.arange(
+        -3 * norm_r * np.sin(np.pi / 27),
+        3 * norm_r * np.sin(np.pi / 27),
+        SIPM_CELL_SIZE,
+    )
+    z_grid = np.arange(-1400, 1400, SIPM_CELL_SIZE)
+    grid = (x_grid, z_grid, PDE_wvs)
+
+    split_filepath = filepath_to_first.split("_1_")
+    filepath_binned = os.path.join(
+        datadir, f"{split_filepath[0]}_{1}_{split_filepath[1]}"
+    )
+    file_binned = uproot.open(filepath_binned)
+    coordinates, true_direction_coordinates = init_coords(
+        file_binned, int(str(file_binned.keys()[0]).split(";")[1][:-1]), grid
+    )
+    for i in range(2, 11):
+        filepath_binned = os.path.join(
+            datadir, f"{split_filepath[0]}_{i}_{split_filepath[1]}"
+        )
+        file_binned = uproot.open(filepath_binned)
+        coordinates_i, true_direction_coordinates_i = init_coords(
+            file_binned, int(str(file_binned.keys()[0]).split(";")[1][:-1]), grid
+        )
+        coordinates = np.concatenate((coordinates, coordinates_i), axis=0)
+        true_direction_coordinates = np.concatenate(
+            (true_direction_coordinates, true_direction_coordinates_i), axis=0
+        )
+
+    idx_to_drop = []
+    for i in range(coordinates.shape[0]):
+        if coordinates[i][0].shape[0] == 0:
+            idx_to_drop.append(i)
+
+    coordinates = np.delete(coordinates, idx_to_drop, axis=0)
+    true_direction_coordinates = np.delete(
+        true_direction_coordinates, idx_to_drop, axis=0
+    )
+    print(coordinates.shape)
+    print(true_direction_coordinates.shape)
+
+    # sample_num = 4 # 0 to 4
+    if sample_num is not None:
+        sample_idx = np.random.permutation(coordinates.shape[0])[
+            20000 * sample_num : 20000 * (sample_num + 1)
+        ]
+        coordinates = coordinates[sample_idx]
+        true_direction_coordinates = true_direction_coordinates[sample_idx]
+
+    if uncertain_angle:
+        uncertainty_introduction_to_direction(true_direction_coordinates)
+
+    sipm_sim(coordinates, sipm_eff)
+
+    idx_to_drop = []
+    for i in range(coordinates.shape[0]):
+        if coordinates[i][0].shape[0] == 0:
+            idx_to_drop.append(i)
+    coordinates = np.delete(coordinates, idx_to_drop, axis=0)
+    true_direction_coordinates = np.delete(
+        true_direction_coordinates, idx_to_drop, axis=0
+    )
+    print(coordinates.shape)
+    print(true_direction_coordinates.shape)
+
+    main_angles = rotate_lines(true_direction_coordinates)
+    intersections = find_intersections(true_direction_coordinates)
+    rotate_events(coordinates, main_angles)
+    move_events_to_grid(coordinates, grid)
+    repeat_nums = np.array([coord[0].shape[0] for coord in coordinates])
+    edf = pd.DataFrame(coordinates, columns=["x_c", "y_c", "z_c", "wv_c", "t_c"])
+
+    unraveled_data = {col: [] for col in edf.columns}
+    row_indices = []
+
+    # Iterate over the DataFrame and unravel the arrays
+    for i, row in edf.iterrows():
+        max_length = max(len(row[col]) for col in edf.columns)
+        for k in range(max_length):
+            row_indices.append((i, k))
+            for col in edf.columns:
+                if k < len(row[col]):
+                    unraveled_data[col].append(row[col][k])
+                else:
+                    unraveled_data[col].append(
+                        np.nan
+                    )  # Handle cases where arrays are of different lengths
+
+    # Create a new DataFrame from the unraveled data
+    unraveled_df = pd.DataFrame(unraveled_data)
+
+    # Create a MultiIndex for the rows
+    multi_index = pd.MultiIndex.from_tuples(row_indices, names=["entry", "subentry"])
+    unraveled_df.index = multi_index
+
+    edf = unraveled_df
+
+    edf["x_i"] = np.repeat(intersections[:, 0], repeat_nums, axis=0)
+    edf["z_i"] = np.repeat(intersections[:, 2], repeat_nums, axis=0)
+
+    x = y = z = x3 = y3 = z3 = unraveled_data = row_indices = main_angles = (
+        intersections
+    ) = wvs = coordinates = file = coordinates_low = file_low = 0
+
+    bdf = pd.DataFrame()
+    gdf = pd.DataFrame()
+    gdf["nhits"] = repeat_nums
+
+    mu_mass = 105.65
+    pi_mass = 139.57
+    mass = mu_mass if is_mu else pi_mass
+    edf.drop("y_c", axis=1, inplace=True)
+    edf.drop("wv_c", axis=1, inplace=True)
+    edf.rename(columns={"z_c": "y_c", "z_i": "y_i"}, inplace=True)
+    edf["z_c"] = np.zeros(edf.shape[0]) + 1000  # why 2000?
+    edf["mass"] = np.ones(edf.shape[0]) * mass
+    edf["true_p"] = np.repeat(
+        np.linalg.norm(true_direction_coordinates.astype("float"), axis=1) * 1000,
+        repeat_nums,
+        axis=0,
+    )
+    edf["beta"] = edf.true_p / np.sqrt(mass**2 + edf.true_p**2)
+    edf["x_p"] = np.zeros(edf.shape[0])
+    edf["y_p"] = np.zeros(edf.shape[0])
+    edf["z_p"] = np.zeros(edf.shape[0])
+    edf["nx_p"] = np.repeat(
+        (
+            true_direction_coordinates
+            / np.array(
+                [
+                    np.linalg.norm(true_direction_coordinates.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
+        ).astype("float")[:, 0],
+        repeat_nums,
+        axis=0,
+    )
+    edf["ny_p"] = np.repeat(
+        (
+            true_direction_coordinates
+            / np.array(
+                [
+                    np.linalg.norm(true_direction_coordinates.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
+        ).astype("float")[:, 2],
+        repeat_nums,
+        axis=0,
+    )
+    edf["nz_p"] = np.repeat(
+        (
+            true_direction_coordinates
+            / np.array(
+                [
+                    np.linalg.norm(true_direction_coordinates.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
+        ).astype("float")[:, 1],
+        repeat_nums,
+        axis=0,
+    )
+
+    true_direction_coordinates = repeat_nums = true_direction_coordinates_low = 0
+
+    return edf, bdf, gdf
