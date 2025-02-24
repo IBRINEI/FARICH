@@ -2277,9 +2277,11 @@ def uncertainty_introduction_to_direction(true_direction_coordinates):
 
 def create_edf(
     filepath_to_first="fullsim_optical_2000_pi_bin_1_FARICH_35mm_no_no_trackers.root",
+    num_of_files=10,
     sample_num=None,
     uncertain_angle=False,
     is_mu=False,
+    is_ka=False,
 ):
     datadir = "data"
     sipm_eff, PDE_wvs = init_sipm_eff()
@@ -2302,18 +2304,19 @@ def create_edf(
     coordinates, true_direction_coordinates = init_coords(
         file_binned, int(str(file_binned.keys()[0]).split(";")[1][:-1]), grid
     )
-    for i in range(2, 11):
-        filepath_binned = os.path.join(
-            datadir, f"{split_filepath[0]}_{i}_{split_filepath[1]}"
-        )
-        file_binned = uproot.open(filepath_binned)
-        coordinates_i, true_direction_coordinates_i = init_coords(
-            file_binned, int(str(file_binned.keys()[0]).split(";")[1][:-1]), grid
-        )
-        coordinates = np.concatenate((coordinates, coordinates_i), axis=0)
-        true_direction_coordinates = np.concatenate(
-            (true_direction_coordinates, true_direction_coordinates_i), axis=0
-        )
+    if num_of_files > 1:
+        for i in range(2, num_of_files + 1):
+            filepath_binned = os.path.join(
+                datadir, f"{split_filepath[0]}_{i}_{split_filepath[1]}"
+            )
+            file_binned = uproot.open(filepath_binned)
+            coordinates_i, true_direction_coordinates_i = init_coords(
+                file_binned, int(str(file_binned.keys()[0]).split(";")[1][:-1]), grid
+            )
+            coordinates = np.concatenate((coordinates, coordinates_i), axis=0)
+            true_direction_coordinates = np.concatenate(
+                (true_direction_coordinates, true_direction_coordinates_i), axis=0
+            )
 
     idx_to_drop = []
     for i in range(coordinates.shape[0]):
@@ -2396,7 +2399,8 @@ def create_edf(
 
     mu_mass = 105.65
     pi_mass = 139.57
-    mass = mu_mass if is_mu else pi_mass
+    ka_mass = 493.68
+    mass = mu_mass if is_mu else (ka_mass if is_ka else pi_mass)
     edf.drop("y_c", axis=1, inplace=True)
     edf.drop("wv_c", axis=1, inplace=True)
     edf.rename(columns={"z_c": "y_c", "z_i": "y_i"}, inplace=True)
