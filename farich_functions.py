@@ -386,7 +386,9 @@ def rotate_event(coords, main_angle):
     angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
     angles = lin_move_to_grid(angles, plane_angles)
     idx_to_shift = (angles - main_angle) / 0.2327
-    idx_to_shift = np.array([round(shift_index_for_event_rotation(idx)) for idx in idx_to_shift])
+    idx_to_shift = np.array(
+        [round(shift_index_for_event_rotation(idx)) for idx in idx_to_shift]
+    )
     angle_to_rotate = np.pi / 2 - angles
     x = rotate_point(coords, angle_to_rotate) - 2 * idx_to_shift * norm_r * np.sin(
         np.pi / 27
@@ -644,10 +646,13 @@ def primaryDirectionRecalculation(edf: pd.DataFrame):
     )
 
 
-def recoAngles(edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False):
+def recoAngles(
+    edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False, for_decay=True
+):
     """
     Геометрическая реконструкция углов фотонов относительно направления частицы.
     Из координат срабатываний и частиц вычисляются углы theta_c, phi_c и время вылета фотонов t_c_orig и добавляются к edf.
+    Параметр for_decay для использования уже существующей точки пересечения трека вместо её вычисления
     """
     r0 = edf.loc[:, ("x_p", "y_p", "z_p")].to_numpy()
     if rotation_mode:
@@ -676,14 +681,19 @@ def recoAngles(edf: pd.DataFrame, idf: pd.DataFrame, rotation_mode=False):
 
     # координаты точки пересечения трека с ФД
     if not rotation_mode:
-        y_i = (
-            r0[:, 1] + (dist + rad_pos) * n0[:, 1] / n0[:, 2]
-        )  # r0[:,1] + (dist + W + rad_pos) * n0[:,1] / n0[:,2]   #   r0[:,1] + (dist + rad_pos) * n0[:,1] / n0[:,2]
-        x_i = (
-            r0[:, 0] + (y_i - r0[:, 1]) * n0[:, 0] / n0[:, 1]
-        )  # r0[:,0] + (y_i - r0[:,1]) * n0[:,0] / n0[:,1]    #     r0[:,0] + (dist + rad_pos) * n0[:,0] / n0[:,2]
-        edf["x_i"] = x_i
-        edf["y_i"] = y_i
+        if for_decay:
+            x_i = edf.x_i
+            y_i = edf.y_i
+        else:
+            y_i = (
+                r0[:, 1] + (dist + rad_pos) * n0[:, 1] / n0[:, 2]
+            )  # r0[:,1] + (dist + W + rad_pos) * n0[:,1] / n0[:,2]   #   r0[:,1] + (dist + rad_pos) * n0[:,1] / n0[:,2]
+            x_i = (
+                r0[:, 0] + (y_i - r0[:, 1]) * n0[:, 0] / n0[:, 1]
+            )  # r0[:,0] + (y_i - r0[:,1]) * n0[:,0] / n0[:,1]    #     r0[:,0] + (dist + rad_pos) * n0[:,0] / n0[:,2]
+            edf["x_i"] = x_i
+            edf["y_i"] = y_i
+
         edf["r_p_c"] = np.sqrt(
             (r0[:, 0] - x_i) ** 2 + (r0[:, 1] - y_i) ** 2 + (r0[:, 2] - r[:, 2]) ** 2
         )
