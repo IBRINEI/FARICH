@@ -372,13 +372,21 @@ def rotate_point(point, angle):
     return new_x
 
 
+def shift_index_for_event_rotation(idx):
+    idx = round(idx)
+    if idx > 20:
+        return idx - 27
+    elif idx < -20:
+        return idx + 27
+    else:
+        return idx
+
+
 def rotate_event(coords, main_angle):
     angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
     angles = lin_move_to_grid(angles, plane_angles)
     idx_to_shift = (angles - main_angle) / 0.2327
-    idx_to_shift = np.array([round(idx) for idx in idx_to_shift])
-    # print(idx_to_shift)
-    # TODO: fix stuff when on edge of 2pi
+    idx_to_shift = np.array([round(shift_index_for_event_rotation(idx)) for idx in idx_to_shift])
     angle_to_rotate = np.pi / 2 - angles
     x = rotate_point(coords, angle_to_rotate) - 2 * idx_to_shift * norm_r * np.sin(
         np.pi / 27
