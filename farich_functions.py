@@ -2476,3 +2476,878 @@ def create_edf(
     true_direction_coordinates = repeat_nums = true_direction_coordinates_low = 0
 
     return edf, bdf, gdf
+
+
+def create_edf_for_field(  # needs reworking for using intersection point from farich itself
+    filepath_to_first="fullsim_3particles_40000_ka_bin_3_FARICH_35mm_1000_no_trackers.root",
+    num_of_files=10,
+    uncertain_angle=False,
+):
+    datadir = "data"
+    sipm_eff, PDE_wvs = init_sipm_eff()
+    for key in sipm_eff.keys():
+        sipm_eff[key] = sipm_eff[key] / 0.55414 * 0.38
+
+    x_grid = np.arange(
+        -3 * norm_r * np.sin(np.pi / 27),
+        3 * norm_r * np.sin(np.pi / 27),
+        SIPM_CELL_SIZE,
+    )
+    z_grid = np.arange(-1400, 1400, SIPM_CELL_SIZE)
+    grid = (x_grid, z_grid, PDE_wvs)
+
+    split_filepath = filepath_to_first.split("_1_")
+    filepath_binned = os.path.join(
+        datadir, f"{split_filepath[0]}_{1}_{split_filepath[1]}"
+    )
+    file_binned = uproot.open(filepath_binned)
+    coordinates, true_direction_coordinates, intersections, ids = init_coords_for_field(
+        file_binned, grid
+    )
+    if num_of_files > 1:
+        for i in range(2, num_of_files + 1):
+            filepath_binned = os.path.join(
+                datadir, f"{split_filepath[0]}_{i}_{split_filepath[1]}"
+            )
+            file_binned = uproot.open(filepath_binned)
+            coordinates_i, true_direction_coordinates_i, intersections_i, ids_i = (
+                init_coords_for_field(file_binned, grid)
+            )
+            coordinates = np.concatenate((coordinates, coordinates_i), axis=0)
+            true_direction_coordinates = np.concatenate(
+                (true_direction_coordinates, true_direction_coordinates_i), axis=0
+            )
+            intersections = np.concatenate((intersections, intersections_i), axis=0)
+            ids = np.concatenate((ids, ids_i), axis=0)
+
+    idx_to_drop = []
+    for i in range(coordinates.shape[0]):
+        if coordinates[i][0].shape[0] == 0:
+            idx_to_drop.append(i)
+
+    coordinates = np.delete(coordinates, idx_to_drop, axis=0)
+    true_direction_coordinates = np.delete(
+        true_direction_coordinates, idx_to_drop, axis=0
+    )
+    intersections = np.delete(intersections, idx_to_drop, axis=0)
+    ids = np.delete(ids, idx_to_drop)
+    print(coordinates.shape)
+    print(true_direction_coordinates.shape)
+
+    true_direction_coordinates = (
+        intersections
+        / np.linalg.norm(intersections, axis=1)[:, None]
+        * np.linalg.norm(true_direction_coordinates, axis=1)[:, None]
+    )
+
+    if uncertain_angle:
+        uncertainty_introduction_to_direction(true_direction_coordinates)
+
+    sipm_sim(coordinates, sipm_eff)
+    for i, coord in enumerate(coordinates):
+        if coord[0].shape[0] == 0:
+            coord[0] = np.atleast_1d(np.array(intersections[i][0]))
+            coord[1] = np.atleast_1d(np.array(intersections[i][1]))
+            coord[2] = np.atleast_1d(np.array(intersections[i][2]))
+            coord[3] = np.atleast_1d(np.array(450))
+            coord[4] = np.atleast_1d(np.array(0.633))
+
+    # may need to drop that deletion for the sake of keeping events
+    # idx_to_drop = []
+    # for i in range(coordinates.shape[0]):
+    #     if coordinates[i][0].shape[0] == 0:
+    #         idx_to_drop.append(i)
+    # coordinates = np.delete(coordinates, idx_to_drop, axis=0)
+    # true_direction_coordinates = np.delete(
+    #     true_direction_coordinates, idx_to_drop, axis=0
+    # )
+    # print(coordinates.shape)
+    # print(true_direction_coordinates.shape)
+
+    main_angles = rotate_lines_for_decay(intersections)
+    intersections = find_intersections_for_decay(intersections)
+    rotate_events(coordinates, main_angles)
+    move_events_to_grid(coordinates, grid)
+    repeat_nums = np.array([coord[0].shape[0] for coord in coordinates])
+    edf = pd.DataFrame(coordinates, columns=["x_c", "y_c", "z_c", "wv_c", "t_c"])
+
+    unraveled_data = {col: [] for col in edf.columns}
+    row_indices = []
+
+    # Iterate over the DataFrame and unravel the arrays
+    for i, row in edf.iterrows():
+        max_length = max(len(row[col]) for col in edf.columns)
+        for k in range(max_length):
+            row_indices.append((i, k))
+            for col in edf.columns:
+                if k < len(row[col]):
+                    unraveled_data[col].append(row[col][k])
+                else:
+                    unraveled_data[col].append(
+                        np.nan
+                    )  # Handle cases where arrays are of different lengths
+
+    # Create a new DataFrame from the unraveled data
+    unraveled_df = pd.DataFrame(unraveled_data)
+
+    # Create a MultiIndex for the rows
+    multi_index = pd.MultiIndex.from_tuples(row_indices, names=["entry", "subentry"])
+    unraveled_df.index = multi_index
+
+    edf = unraveled_df
+
+    edf["x_i"] = np.repeat(intersections[:, 0], repeat_nums, axis=0)
+    edf["z_i"] = np.repeat(intersections[:, 2], repeat_nums, axis=0)
+
+    x = y = z = x3 = y3 = z3 = unraveled_data = row_indices = main_angles = wvs = (
+        coordinates
+    ) = file = coordinates_low = file_low = 0
+
+    bdf = pd.DataFrame()
+    gdf = pd.DataFrame()
+    gdf["nhits"] = repeat_nums
+
+    mu_mass = 105.65
+    pi_mass = 139.57
+    ka_mass = 493.68
+    mass = np.array(
+        [
+            (
+                mu_mass
+                if np.abs(ids[i]) == 13
+                else (ka_mass if np.abs(ids[i]) == 321 else pi_mass)
+            )
+            for i in range(ids.shape[0])
+        ]
+    )
+    edf.rename(columns={"y_c": "tmp_c"}, inplace=True)
+    edf.drop("wv_c", axis=1, inplace=True)
+    edf.rename(columns={"z_c": "y_c", "z_i": "y_i"}, inplace=True)
+    edf.rename(columns={"tmp_c": "z_c"}, inplace=True)
+    # edf["z_c"] = np.zeros(edf.shape[0]) + 1000  # why 2000?
+    # edf["mass"] = np.ones(edf.shape[0]) * mass
+    edf["mass"] = np.repeat(
+        mass,
+        repeat_nums,
+        axis=0,
+    )
+    edf["true_p"] = np.repeat(
+        np.linalg.norm(true_direction_coordinates.astype("float"), axis=1) * 1000,
+        repeat_nums,
+        axis=0,
+    )
+    edf["beta"] = edf.true_p / np.sqrt(edf.mass**2 + edf.true_p**2)
+    edf["x_p"] = np.zeros(edf.shape[0])
+    edf["y_p"] = np.zeros(edf.shape[0])
+    edf["z_p"] = np.zeros(edf.shape[0])
+    edf["nx_p"] = np.repeat(
+        (
+            intersections
+            / np.array(
+                [
+                    np.linalg.norm(intersections.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
+        ).astype("float")[:, 0],
+        repeat_nums,
+        axis=0,
+    )
+    edf["ny_p"] = np.repeat(
+        (
+            intersections
+            / np.array(
+                [
+                    np.linalg.norm(intersections.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
+        ).astype("float")[:, 2],
+        repeat_nums,
+        axis=0,
+    )
+    edf["nz_p"] = np.repeat(
+        (
+            intersections
+            / np.array(
+                [
+                    np.linalg.norm(intersections.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
+        ).astype("float")[:, 1],
+        repeat_nums,
+        axis=0,
+    )
+
+    true_direction_coordinates = repeat_nums = true_direction_coordinates_low = (
+        intersections
+    ) = 0
+
+    return edf, bdf, gdf
+
+
+def init_coords_for_field(file, grid):
+    primary_pdgid = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.pdgId"].array()
+    )
+    farich_pdgid = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
+    )
+    shapes = np.array(
+        [
+            np.where(
+                (farich_pdgid[i] != -22)
+                & (farich_pdgid[i] != 11)
+                & (primary_pdgid[i][0] in farich_pdgid[i])
+            )[0].shape[0]
+            for i in range(len(farich_pdgid))
+        ]
+    )
+    good_events = np.where(shapes == 1)[0]
+    primary_particle_idx = np.array(
+        [
+            np.where(farich_pdgid[good_events[i]] == primary_pdgid[good_events[i]])[0][
+                0
+            ]
+            for i in range(len(good_events))
+        ]
+    )
+
+    x = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.postStepPosition.x"
+        ].array()
+    )[good_events]
+    y = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.postStepPosition.y"
+        ].array()
+    )[good_events]
+    z = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.postStepPosition.z"
+        ].array()
+    )[good_events]
+    wvs = (
+        1239.841
+        / np.array(
+            file[file.keys()[0]]["FarichBarrelG4Hits"][
+                "FarichBarrelG4Hits.energy"
+            ].array()
+        )
+        * 1e-9
+    )[good_events]
+    t = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.localTime"
+        ].array()
+    )[good_events]
+
+    farich_momentum_x = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.momentum.px"
+        ].array()
+    )[good_events]
+    farich_momentum_y = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.momentum.py"
+        ].array()
+    )[good_events]
+    farich_momentum_z = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.momentum.pz"
+        ].array()
+    )[good_events]
+    farich_pdgid = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
+    )[good_events]
+
+    x3 = np.array(
+        [
+            farich_momentum_x[i][primary_particle_idx[i]]
+            for i in range(farich_momentum_x.shape[0])
+        ]
+    )
+    y3 = np.array(
+        [
+            farich_momentum_y[i][primary_particle_idx[i]]
+            for i in range(farich_momentum_y.shape[0])
+        ]
+    )
+    z3 = np.array(
+        [
+            farich_momentum_z[i][primary_particle_idx[i]]
+            for i in range(farich_momentum_z.shape[0])
+        ]
+    )
+    id = np.array(
+        [farich_pdgid[i][primary_particle_idx[i]] for i in range(farich_pdgid.shape[0])]
+    )
+
+    xi = np.array([x[i][primary_particle_idx[i]] for i in range(x.shape[0])])
+    yi = np.array([y[i][primary_particle_idx[i]] for i in range(y.shape[0])])
+    zi = np.array([z[i][primary_particle_idx[i]] for i in range(z.shape[0])])
+
+    x3 = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.px"].array()
+    )[good_events]
+    y3 = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.py"].array()
+    )[good_events]
+    z3 = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.pz"].array()
+    )[good_events]
+    x3 = np.array([x3[i][0] for i in range(len(good_events))])
+    y3 = np.array([y3[i][0] for i in range(len(good_events))])
+    z3 = np.array([z3[i][0] for i in range(len(good_events))])
+
+    true_direction_coordinates = np.column_stack((x3, y3, z3))
+    intersections = np.stack((xi, yi, zi), axis=1)
+    for i in range(len(wvs)):
+        wvs[i] = lin_move_to_grid(wvs[i], grid[2])
+    coordinates = np.column_stack((x, y, z, wvs, t))
+    return coordinates, true_direction_coordinates, intersections, id
+
+
+def init_coords_decay(
+    file, grid, good_events, primary_particle_idx, primary_particle_in_primary_idx
+):
+    x = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.postStepPosition.x"
+        ].array()
+    )[good_events]
+    y = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.postStepPosition.y"
+        ].array()
+    )[good_events]
+    z = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.postStepPosition.z"
+        ].array()
+    )[good_events]
+    wvs = (
+        1239.841
+        / np.array(
+            file[file.keys()[0]]["FarichBarrelG4Hits"][
+                "FarichBarrelG4Hits.energy"
+            ].array()
+        )
+        * 1e-9
+    )[good_events]
+    t = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.localTime"
+        ].array()
+    )[good_events]
+
+    farich_momentum_x = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.momentum.px"
+        ].array()
+    )[good_events]
+    farich_momentum_y = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.momentum.py"
+        ].array()
+    )[good_events]
+    farich_momentum_z = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"][
+            "FarichBarrelG4Hits.momentum.pz"
+        ].array()
+    )[good_events]
+    farich_pdgid = np.array(
+        file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
+    )[good_events]
+
+    x3 = np.array(
+        [
+            farich_momentum_x[i][primary_particle_idx[i]]
+            for i in range(farich_momentum_x.shape[0])
+        ]
+    )
+    y3 = np.array(
+        [
+            farich_momentum_y[i][primary_particle_idx[i]]
+            for i in range(farich_momentum_y.shape[0])
+        ]
+    )
+    z3 = np.array(
+        [
+            farich_momentum_z[i][primary_particle_idx[i]]
+            for i in range(farich_momentum_z.shape[0])
+        ]
+    )
+    id = np.array(
+        [farich_pdgid[i][primary_particle_idx[i]] for i in range(farich_pdgid.shape[0])]
+    )
+
+    xi = np.array([x[i][primary_particle_idx[i]] for i in range(x.shape[0])])
+    yi = np.array([y[i][primary_particle_idx[i]] for i in range(y.shape[0])])
+    zi = np.array([z[i][primary_particle_idx[i]] for i in range(z.shape[0])])
+
+    x3 = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.px"].array()
+    )[good_events]
+    y3 = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.py"].array()
+    )[good_events]
+    z3 = np.array(
+        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.pz"].array()
+    )[good_events]
+    x3 = np.array(
+        [x3[i][primary_particle_in_primary_idx[i]] for i in range(len(good_events))]
+    )
+    y3 = np.array(
+        [y3[i][primary_particle_in_primary_idx[i]] for i in range(len(good_events))]
+    )
+    z3 = np.array(
+        [z3[i][primary_particle_in_primary_idx[i]] for i in range(len(good_events))]
+    )
+    # Объединяем массивы, сохраняя структуру массивов
+    true_direction_coordinates = np.stack((x3, y3, z3), axis=1)
+    intersections = np.stack((xi, yi, zi), axis=1)
+    for i in range(len(wvs)):
+        wvs[i] = lin_move_to_grid(wvs[i], grid[2])
+    coordinates = np.column_stack((x, y, z, wvs, t))
+    return coordinates, true_direction_coordinates, intersections, id
+
+
+def primary_particle_match_test(
+    primary_particles_array, ids_to_check, ids_to_match, verbose=False
+):
+    for i in range(len(ids_to_check)):
+        if primary_particles_array[ids_to_check[i]] != ids_to_match[i]:
+            if verbose:
+                print(
+                    f"Expected {ids_to_match[i]} but got {primary_particles_array[ids_to_check[i]]} in {ids_to_check[i]}-th position"
+                )
+            return False
+    return True
+
+
+# def find_primary_in_farich(primary_particles_array, farich_particles_array, primary_id, pdg_id, verbose=False):
+#     find_index_of_pdg_id = lambda arr: (idx[-1] if (idx := np.flatnonzero(arr == pdg_id)).size and (idx[-1] < arr.size) else False)
+#     if primary_particles_array[primary_id] == pdg_id:
+#         if find_index_of_pdg_id(farich_particles_array) is not False:
+#             if primary_particles_array[primary_id] != farich_particles_array[find_index_ka(farich_pdgid[i])]:
+#                 if verbose:
+#                     print('Mismatch', i)
+#                 mismatches.append(i)
+#                 is_good = False
+#         else:
+#             if verbose:
+#                 print('No ka in event', i)
+#             is_good = False
+#             no_ka.append(i)
+#     if is_good:
+#         good_events.append(i)
+#         primary_particle_idx.append(find_index_ka(farich_pdgid[i]))
+#         primary_particle_in_primary_idx.append(2)
+#
+
+
+def find_good_events_in_decay(primary_pdgid, farich_pdgid):
+    i = 0
+    empty_farich = 0
+    important_particle_ind = 3
+    mismatches = []
+    good_events = []
+    good_mu_events = []
+    good_ka_events = []
+    primary_particle_idx = []
+    primary_particle_in_primary_idx = []
+    no_mu_in_mu = []
+    no_pi_in_pi = []
+    no_ka = []
+    # find_index = lambda arr: (idx[-1]+1 if (idx := np.flatnonzero(arr == -22)).size and (idx[-1]+1 < arr.size) else 0) # моржовый оператор :)
+    find_index = lambda arr: (
+        idx[-1] + 1
+        if (idx := np.flatnonzero(np.isin(arr, [-22, -11]))).size
+        and (idx[-1] + 1 < arr.size)
+        else 0
+    )
+    find_index_mu = lambda arr: (
+        idx[-1]
+        if (idx := np.flatnonzero(arr == -13)).size and (idx[-1] < arr.size)
+        else False
+    )
+    find_index_pi = lambda arr: (
+        idx[-1]
+        if (idx := np.flatnonzero(arr == 211)).size and (idx[-1] < arr.size)
+        else False
+    )
+    find_index_ka = lambda arr: (
+        idx[-1]
+        if (idx := np.flatnonzero(arr == -321)).size and (idx[-1] < arr.size)
+        else False
+    )
+
+    # need 2 rings per event now...
+
+    for primary_particles in primary_pdgid:
+        is_good = True
+
+        if (
+            farich_pdgid[i].shape[0] == 0
+            or np.flatnonzero(farich_pdgid[i] + 22).shape[0] == 0
+        ):
+            empty_farich += 1
+            is_good = False
+
+        if is_good:
+            is_good = primary_particle_match_test(
+                primary_particles, [0, 1, 2], [30443, 421, -321], True
+            )
+
+        if primary_particles[2] == -321 and is_good:
+            if (
+                farich_pdgid[i].shape[0] != 0
+                and np.flatnonzero(farich_pdgid[i] + 22).shape[0] != 0
+            ):
+                if find_index_ka(farich_pdgid[i]) is not False:
+                    if (
+                        primary_particles[2]
+                        != farich_pdgid[i][find_index_ka(farich_pdgid[i])]
+                    ):
+                        print("Mismatch", i)
+                        mismatches.append(i)
+                        is_good = False
+                else:
+                    # print('No ka in event', i)
+                    is_good = False
+                    no_ka.append(i)
+            if is_good:
+                good_events.append(i)
+                primary_particle_idx.append(find_index_ka(farich_pdgid[i]))
+                primary_particle_in_primary_idx.append(2)
+
+        if primary_particles[important_particle_ind] == -13 and is_good:
+            if (
+                farich_pdgid[i].shape[0] != 0
+                and np.flatnonzero(farich_pdgid[i] + 22).shape[0] != 0
+            ):
+                if find_index_mu(farich_pdgid[i]) is not False:
+                    if (
+                        primary_particles[important_particle_ind]
+                        != farich_pdgid[i][find_index_mu(farich_pdgid[i])]
+                    ):
+                        print("Mismatch", i)
+                        mismatches.append(i)
+                        is_good = False
+                else:
+                    # print('No mu in mu event', i)
+                    is_good = False
+                    no_mu_in_mu.append(i)
+            if is_good:
+                good_events.append(i)
+                primary_particle_idx.append(find_index_mu(farich_pdgid[i]))
+                primary_particle_in_primary_idx.append(important_particle_ind)
+            if not is_good:
+                if len(good_events) != 0:
+                    good_events.pop()
+                    primary_particle_idx.pop()
+                    primary_particle_in_primary_idx.pop()
+
+        elif primary_particles[important_particle_ind] == 211 and is_good:
+            if (
+                farich_pdgid[i].shape[0] != 0
+                and np.flatnonzero(farich_pdgid[i] + 22).shape[0] != 0
+            ):
+                if find_index_pi(farich_pdgid[i]) is not False:
+                    if (
+                        primary_particles[important_particle_ind]
+                        != farich_pdgid[i][find_index_mu(farich_pdgid[i])]
+                    ):
+                        print("Mismatch", i)
+                        mismatches.append(i)
+                        is_good = False
+                else:
+                    # print('No mu in mu event', i)
+                    is_good = False
+                    no_pi_in_pi.append(i)
+            if is_good:
+                good_events.append(i)
+                primary_particle_idx.append(find_index_pi(farich_pdgid[i]))
+                primary_particle_in_primary_idx.append(important_particle_ind)
+            if not is_good:
+                if len(good_events) != 0:
+                    good_events.pop()
+                    primary_particle_idx.pop()
+                    primary_particle_in_primary_idx.pop()
+
+        # if is_good:
+        #     good_events.append(i)
+        #     primary_particle_idx.append(find_index(farich_pdgid[i]))
+        i += 1
+
+    print("Empty Farich:", empty_farich)
+    print("Mismatches: ", len(mismatches))
+    print("Missing K: ", len(no_ka))
+    print("Missing Mu in Mu event: ", len(no_mu_in_mu))
+    print("Missing Pi in Pi event: ", len(no_pi_in_pi))
+    print(
+        "Full bad events: ",
+        len(mismatches)
+        + empty_farich
+        + len(set(np.concatenate([no_mu_in_mu, no_ka, no_pi_in_pi]))),
+    )
+    print(
+        "Good Events:",
+        i
+        - len(mismatches)
+        - empty_farich
+        - len(set(np.concatenate([no_mu_in_mu, no_ka, no_pi_in_pi]))),
+    )
+    print(len(good_events))
+    print(len(set(good_events)))
+    print(-len(set(good_events)) + len(good_events))
+
+    return good_events, primary_particle_idx, primary_particle_in_primary_idx
+
+def find_intersections_for_decay(full_coords):
+    intersections = np.zeros((full_coords.shape[0], 3))
+    zeros = np.zeros((1, 3))
+    for i in range(full_coords.shape[0]):
+        event_coords = full_coords[i] / 1000
+        pca = PCA(n_components=1)
+
+        # if event_coords[0].shape[0] == 1:
+        # print(event_coords)
+        event_coords = [[0, arr] for arr in event_coords]
+        # print(event_coords)
+        pca.fit(np.column_stack(event_coords))
+        line_direction = pca.components_[0]
+        line_point = pca.mean_
+
+        # Calculate the parameter t for the intersection with the plane y=1000
+        p_y = line_point[1]
+        d_y = line_direction[1]
+        t = (1000 - p_y) / d_y
+
+        # Find the intersection point
+        intersection_point = line_point + t * line_direction
+
+        # print(f"Line direction: {line_direction}")
+        # print(f"Point on the line: {line_point}")
+        # print(f"Intersection point with the plane y=1000: {intersection_point}")
+        for j in range(3):
+            intersections[i][j] = intersection_point[j]
+    return intersections
+
+def rotate_lines_for_decay(full_coords):
+    angles = np.zeros(full_coords.shape[0])
+    for i in range(full_coords.shape[0]):
+        event_coords = full_coords[i]
+        rotated_event_coords, angles[i] = rotate_line_for_decay(event_coords)
+
+        for j in range(3):
+            full_coords[i][j] = rotated_event_coords[:, j]
+    return angles
+
+# It only fixes angle problems, no reason not to use as main func
+def rotate_line_for_decay(coords):
+    angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
+    # print(angles)
+    try:
+        median_angle = angles
+    except IndexError:
+        print(angles)
+        median_angle = np.median(angles)
+    median_angle = lin_move_to_grid(np.array([median_angle]), plane_angles)
+    # print(angles)
+    angle_to_rotate = np.pi / 2 - median_angle
+    # print(angle_to_rotate)
+    x, y = rotate_point_on_line(coords, angle_to_rotate)
+    return np.column_stack((x, y, coords[2])), median_angle
+
+
+def create_edf_decay(
+        filepath="fullsim_optical_2000_pi_bin_1_FARICH_35mm_no_no_trackers.root",
+        good_events=[],
+        primary_particle_idx=[],
+        primary_particle_in_primary_idx=[],
+        uncertain_angle=False,
+):
+    datadir = "data"
+    sipm_eff, PDE_wvs = init_sipm_eff()
+    for key in sipm_eff.keys():
+        sipm_eff[key] = sipm_eff[key] / 0.55414 * 0.38
+
+    x_grid = np.arange(
+        -3 * norm_r * np.sin(np.pi / 27),
+        3 * norm_r * np.sin(np.pi / 27),
+        SIPM_CELL_SIZE,
+    )
+    z_grid = np.arange(-1400, 1400, SIPM_CELL_SIZE)
+    grid = (x_grid, z_grid, PDE_wvs)
+
+    decay_file = uproot.open(os.path.join(datadir, filepath))
+    coordinates, true_direction_coordinates, intersections, ids = init_coords_decay(
+        decay_file, grid, good_events, primary_particle_idx, primary_particle_in_primary_idx
+    )
+
+    idx_to_drop = []
+    for i in range(coordinates.shape[0]):
+        if coordinates[i][0].shape[0] == 0:
+            idx_to_drop.append(i)
+
+    coordinates = np.delete(coordinates, idx_to_drop, axis=0)
+    true_direction_coordinates = np.delete(
+        true_direction_coordinates, idx_to_drop, axis=0
+    )
+    intersections = np.delete(intersections, idx_to_drop, axis=0)
+    ids = np.delete(ids, idx_to_drop)
+    print(coordinates.shape)
+    print(true_direction_coordinates.shape)
+
+    true_direction_coordinates = intersections / np.linalg.norm(intersections, axis=1)[:, None] * np.linalg.norm(
+        true_direction_coordinates, axis=1)[:, None]
+
+    if uncertain_angle:
+        uncertainty_introduction_to_direction(true_direction_coordinates)
+
+    sipm_sim(coordinates, sipm_eff)
+    for i, coord in enumerate(coordinates):
+        # print(coord[0].shape)
+        # print(coord)
+        # if coord[0].shape[0] != 0:
+        #     break
+        if coord[0].shape[0] == 0:
+            coord[0] = np.atleast_1d(np.array(intersections[i][0]))
+            coord[1] = np.atleast_1d(np.array(intersections[i][1]))
+            coord[2] = np.atleast_1d(np.array(intersections[i][2]))
+            coord[3] = np.atleast_1d(np.array(450))
+            coord[4] = np.atleast_1d(np.array(0.633))
+    # idx_to_drop = []
+    # for i in range(coordinates.shape[0]):
+    #     if coordinates[i][0].shape[0] == 0:
+    #         idx_to_drop.append(i)
+    # coordinates = np.delete(coordinates, idx_to_drop, axis=0)
+    # true_direction_coordinates = np.delete(
+    #     true_direction_coordinates, idx_to_drop, axis=0
+    # )
+    # intersections = np.delete(intersections, idx_to_drop, axis=0)
+    # ids = np.delete(ids, idx_to_drop)
+    # print(coordinates.shape)
+    # print(true_direction_coordinates.shape)
+
+    main_angles = rotate_lines_for_decay(intersections)  # Rotates intersection points
+
+    intersections = find_intersections_for_decay(
+        intersections)  # May need to rewrite both to treat elements as scalasrs and to change reference point from 0
+
+    rotate_events(coordinates, main_angles)  # There are events with extra rings somewhere around angle idx 13-16
+    move_events_to_grid(coordinates, grid)
+    repeat_nums = np.array([coord[0].shape[0] for coord in coordinates])
+    edf = pd.DataFrame(coordinates, columns=["x_c", "y_c", "z_c", "wv_c", "t_c"])
+
+    unraveled_data = {col: [] for col in edf.columns}
+    row_indices = []
+
+    # Iterate over the DataFrame and unravel the arrays
+    for i, row in edf.iterrows():
+        max_length = max(len(row[col]) for col in edf.columns)
+        for k in range(max_length):
+            row_indices.append((i, k))
+            for col in edf.columns:
+                if k < len(row[col]):
+                    unraveled_data[col].append(row[col][k])
+                else:
+                    unraveled_data[col].append(
+                        np.nan
+                    )  # Handle cases where arrays are of different lengths
+
+    # Create a new DataFrame from the unraveled data
+    unraveled_df = pd.DataFrame(unraveled_data)
+
+    # Create a MultiIndex for the rows
+    multi_index = pd.MultiIndex.from_tuples(row_indices, names=["entry", "subentry"])
+    unraveled_df.index = multi_index
+
+    edf = unraveled_df
+
+    edf["x_i"] = np.repeat(intersections[:, 0], repeat_nums, axis=0)
+    edf["z_i"] = np.repeat(intersections[:, 2], repeat_nums, axis=0)
+
+    x = y = z = x3 = y3 = z3 = unraveled_data = row_indices = wvs = coordinates = file = coordinates_low = file_low = 0  # = main_angles
+
+    bdf = pd.DataFrame()
+    gdf = pd.DataFrame()
+    gdf["nhits"] = repeat_nums
+
+    mu_mass = 105.65
+    pi_mass = 139.57
+    ka_mass = 493.68
+    # mass = mu_mass if is_mu else (ka_mass if is_ka else pi_mass)
+    mass = np.array(
+        [mu_mass if ids[i] == -13 else (ka_mass if ids[i] == -321 else pi_mass) for i in range(ids.shape[0])])
+    # edf.drop("y_c", axis=1, inplace=True)
+    edf.rename(columns={"y_c": "tmp_c"}, inplace=True)
+    edf.drop("wv_c", axis=1, inplace=True)
+    edf.rename(columns={"z_c": "y_c", "z_i": "y_i"}, inplace=True)
+    edf.rename(columns={"tmp_c": "z_c"}, inplace=True)
+    # edf["z_c"] = np.zeros(edf.shape[0]) + 1000
+    # edf["mass"] = np.ones(edf.shape[0]) * mass
+    edf["mass"] = np.repeat(
+        mass,
+        repeat_nums,
+        axis=0,
+    )
+    edf["true_p"] = np.repeat(
+        np.linalg.norm(true_direction_coordinates.astype("float"), axis=1) * 1000,
+        repeat_nums,
+        axis=0,
+    )
+    edf["beta"] = edf.true_p / np.sqrt(edf.mass ** 2 + edf.true_p ** 2)
+    edf["x_p"] = np.zeros(edf.shape[0])
+    edf["y_p"] = np.zeros(edf.shape[0])
+    edf["z_p"] = np.zeros(edf.shape[0])
+    edf["nx_p"] = np.repeat(
+        (
+                intersections
+                / np.array(
+            [
+                np.linalg.norm(intersections.astype("float"), axis=1)
+                for i in range(3)
+            ]
+        ).T
+        ).astype("float")[:, 0],
+        repeat_nums,
+        axis=0,
+    )
+    edf["ny_p"] = np.repeat(
+        (
+                intersections
+                / np.array(
+            [
+                np.linalg.norm(intersections.astype("float"), axis=1)
+                for i in range(3)
+            ]
+        ).T
+        ).astype("float")[:, 2],
+        repeat_nums,
+        axis=0,
+    )
+    edf["nz_p"] = np.repeat(
+        (
+                intersections
+                / np.array(
+            [
+                np.linalg.norm(intersections.astype("float"), axis=1)
+                for i in range(3)
+            ]
+        ).T
+        ).astype("float")[:, 1],
+        repeat_nums,
+        axis=0,
+    )
+
+    true_direction_coordinates = repeat_nums = true_direction_coordinates_low = mass = intersections = 0
+    return edf, bdf, gdf, main_angles
+
+
+def enforce_float32(df):
+    return df.astype({col: np.float32 for col in df.select_dtypes(include=['float64']).columns})
