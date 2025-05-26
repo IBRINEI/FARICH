@@ -3107,6 +3107,7 @@ def find_good_events_in_decay(primary_pdgid, farich_pdgid):
 
     return good_events, primary_particle_idx, primary_particle_in_primary_idx
 
+
 def find_intersections_for_decay(full_coords):
     intersections = np.zeros((full_coords.shape[0], 3))
     zeros = np.zeros((1, 3))
@@ -3137,6 +3138,7 @@ def find_intersections_for_decay(full_coords):
             intersections[i][j] = intersection_point[j]
     return intersections
 
+
 def rotate_lines_for_decay(full_coords):
     angles = np.zeros(full_coords.shape[0])
     for i in range(full_coords.shape[0]):
@@ -3146,6 +3148,7 @@ def rotate_lines_for_decay(full_coords):
         for j in range(3):
             full_coords[i][j] = rotated_event_coords[:, j]
     return angles
+
 
 # It only fixes angle problems, no reason not to use as main func
 def rotate_line_for_decay(coords):
@@ -3165,11 +3168,11 @@ def rotate_line_for_decay(coords):
 
 
 def create_edf_decay(
-        filepath="fullsim_optical_2000_pi_bin_1_FARICH_35mm_no_no_trackers.root",
-        good_events=[],
-        primary_particle_idx=[],
-        primary_particle_in_primary_idx=[],
-        uncertain_angle=False,
+    filepath="fullsim_optical_2000_pi_bin_1_FARICH_35mm_no_no_trackers.root",
+    good_events=[],
+    primary_particle_idx=[],
+    primary_particle_in_primary_idx=[],
+    uncertain_angle=False,
 ):
     datadir = "data"
     sipm_eff, PDE_wvs = init_sipm_eff()
@@ -3186,7 +3189,11 @@ def create_edf_decay(
 
     decay_file = uproot.open(os.path.join(datadir, filepath))
     coordinates, true_direction_coordinates, intersections, ids = init_coords_decay(
-        decay_file, grid, good_events, primary_particle_idx, primary_particle_in_primary_idx
+        decay_file,
+        grid,
+        good_events,
+        primary_particle_idx,
+        primary_particle_in_primary_idx,
     )
 
     idx_to_drop = []
@@ -3203,8 +3210,11 @@ def create_edf_decay(
     print(coordinates.shape)
     print(true_direction_coordinates.shape)
 
-    true_direction_coordinates = intersections / np.linalg.norm(intersections, axis=1)[:, None] * np.linalg.norm(
-        true_direction_coordinates, axis=1)[:, None]
+    true_direction_coordinates = (
+        intersections
+        / np.linalg.norm(intersections, axis=1)[:, None]
+        * np.linalg.norm(true_direction_coordinates, axis=1)[:, None]
+    )
 
     if uncertain_angle:
         uncertainty_introduction_to_direction(true_direction_coordinates)
@@ -3237,9 +3247,12 @@ def create_edf_decay(
     main_angles = rotate_lines_for_decay(intersections)  # Rotates intersection points
 
     intersections = find_intersections_for_decay(
-        intersections)  # May need to rewrite both to treat elements as scalasrs and to change reference point from 0
+        intersections
+    )  # May need to rewrite both to treat elements as scalasrs and to change reference point from 0
 
-    rotate_events(coordinates, main_angles)  # There are events with extra rings somewhere around angle idx 13-16
+    rotate_events(
+        coordinates, main_angles
+    )  # There are events with extra rings somewhere around angle idx 13-16
     move_events_to_grid(coordinates, grid)
     repeat_nums = np.array([coord[0].shape[0] for coord in coordinates])
     edf = pd.DataFrame(coordinates, columns=["x_c", "y_c", "z_c", "wv_c", "t_c"])
@@ -3272,7 +3285,9 @@ def create_edf_decay(
     edf["x_i"] = np.repeat(intersections[:, 0], repeat_nums, axis=0)
     edf["z_i"] = np.repeat(intersections[:, 2], repeat_nums, axis=0)
 
-    x = y = z = x3 = y3 = z3 = unraveled_data = row_indices = wvs = coordinates = file = coordinates_low = file_low = 0  # = main_angles
+    x = y = z = x3 = y3 = z3 = unraveled_data = row_indices = wvs = coordinates = (
+        file
+    ) = coordinates_low = file_low = 0  # = main_angles
 
     bdf = pd.DataFrame()
     gdf = pd.DataFrame()
@@ -3283,7 +3298,11 @@ def create_edf_decay(
     ka_mass = 493.68
     # mass = mu_mass if is_mu else (ka_mass if is_ka else pi_mass)
     mass = np.array(
-        [mu_mass if ids[i] == -13 else (ka_mass if ids[i] == -321 else pi_mass) for i in range(ids.shape[0])])
+        [
+            mu_mass if ids[i] == -13 else (ka_mass if ids[i] == -321 else pi_mass)
+            for i in range(ids.shape[0])
+        ]
+    )
     # edf.drop("y_c", axis=1, inplace=True)
     edf.rename(columns={"y_c": "tmp_c"}, inplace=True)
     edf.drop("wv_c", axis=1, inplace=True)
@@ -3301,53 +3320,57 @@ def create_edf_decay(
         repeat_nums,
         axis=0,
     )
-    edf["beta"] = edf.true_p / np.sqrt(edf.mass ** 2 + edf.true_p ** 2)
+    edf["beta"] = edf.true_p / np.sqrt(edf.mass**2 + edf.true_p**2)
     edf["x_p"] = np.zeros(edf.shape[0])
     edf["y_p"] = np.zeros(edf.shape[0])
     edf["z_p"] = np.zeros(edf.shape[0])
     edf["nx_p"] = np.repeat(
         (
-                intersections
-                / np.array(
-            [
-                np.linalg.norm(intersections.astype("float"), axis=1)
-                for i in range(3)
-            ]
-        ).T
+            intersections
+            / np.array(
+                [
+                    np.linalg.norm(intersections.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
         ).astype("float")[:, 0],
         repeat_nums,
         axis=0,
     )
     edf["ny_p"] = np.repeat(
         (
-                intersections
-                / np.array(
-            [
-                np.linalg.norm(intersections.astype("float"), axis=1)
-                for i in range(3)
-            ]
-        ).T
+            intersections
+            / np.array(
+                [
+                    np.linalg.norm(intersections.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
         ).astype("float")[:, 2],
         repeat_nums,
         axis=0,
     )
     edf["nz_p"] = np.repeat(
         (
-                intersections
-                / np.array(
-            [
-                np.linalg.norm(intersections.astype("float"), axis=1)
-                for i in range(3)
-            ]
-        ).T
+            intersections
+            / np.array(
+                [
+                    np.linalg.norm(intersections.astype("float"), axis=1)
+                    for i in range(3)
+                ]
+            ).T
         ).astype("float")[:, 1],
         repeat_nums,
         axis=0,
     )
 
-    true_direction_coordinates = repeat_nums = true_direction_coordinates_low = mass = intersections = 0
+    true_direction_coordinates = repeat_nums = true_direction_coordinates_low = mass = (
+        intersections
+    ) = 0
     return edf, bdf, gdf, main_angles
 
 
 def enforce_float32(df):
-    return df.astype({col: np.float32 for col in df.select_dtypes(include=['float64']).columns})
+    return df.astype(
+        {col: np.float32 for col in df.select_dtypes(include=["float64"]).columns}
+    )
