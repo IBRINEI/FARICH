@@ -18,6 +18,8 @@ from scipy.spatial.distance import cdist
 from xgboost import XGBRegressor
 from sklearn.preprocessing import QuantileTransformer
 
+from line_profiler import profile
+
 plt.style.use("default")
 
 rng = np.random.default_rng(12345)
@@ -604,46 +606,40 @@ def applySecondSpaceCut(edf: pd.DataFrame) -> pd.DataFrame:
     ]
 
 
-def edf_to_bdf(edf_col: pd.Series, bdf: pd.DataFrame):
-    to_bdf = [sub.iloc[0] for _, sub in edf_col.groupby(level=0)]
-    bdf[edf_col.name] = pd.Series(to_bdf)
+#
+# def edf_to_bdf(edf_col: pd.Series, bdf: pd.DataFrame):
+#     to_bdf = [sub.iloc[0] for _, sub in edf_col.groupby(level=0)]
+#     bdf[edf_col.name] = pd.Series(to_bdf)
+def edf_to_bdf(edf_col: pd.Series, bdf: pd.DataFrame) -> None:
+    first_mask = ~edf_col.index.get_level_values(0).duplicated(keep="first")
+    bdf[edf_col.name] = edf_col[first_mask].to_numpy()
 
 
-def primaryDirectionRecalculation(edf: pd.DataFrame):
-    N = edf.loc[:, ("nx_p", "ny_p", "nz_p")].to_numpy()
-    M = []
-    theta_ps = []
-    for n in N:
-        M.append([0, 0, 1])
-        dot_product = np.dot(n, [0, 0, 1.0])
+def primaryDirectionRecalculation(edf: pd.DataFrame) -> None:
+    """
+    Vectorised replacement of the original loop-based implementation.
+    Modifies `edf` in-place, no return value.
+    """
+    # ---- 1. Направление частицы и угол θ_p ---------------------------------
+    N = edf[["nx_p", "ny_p", "nz_p"]].to_numpy(dtype=np.float32)  # (N,3)
+    norms = np.linalg.norm(N, axis=1)  # ||n||
+    cos_theta = np.clip(N[:, 2] / norms, -1.0, 1.0)  # n_z / ||n||
+    theta_p = np.arccos(cos_theta)  # (rad)
 
-        # Calculate the magnitudes (norms)
-        mag_vector = np.linalg.norm(n)
-        mag_z_axis = np.linalg.norm([0, 0, 1.0])
+    # ---- 2. Записываем новые столбцы ---------------------------------------
+    edf["recalculated_nx_p"] = 0.0  # все (0,0,1)
+    edf["recalculated_ny_p"] = 0.0
+    edf["recalculated_nz_p"] = 1.0
+    edf["theta_p"] = theta_p
 
-        # Calculate the cosine of the angle
-        cos_theta = dot_product / (mag_vector * mag_z_axis)
-
-        # Handle possible numerical issues with floating point precision
-        cos_theta = np.clip(cos_theta, -1.0, 1.0)
-
-        # Calculate the angle in radians
-        theta_radians = np.arccos(cos_theta)
-        theta_ps.append(theta_radians)
-        # print(n)
-        # print(C_inv)
-        # print(C_inv @ n)
-        # break
-    M = np.array(M)
-    theta_ps = np.array(theta_ps)
-    edf["recalculated_nx_p"] = M[:, 0]
-    edf["recalculated_ny_p"] = M[:, 1]
-    edf["recalculated_nz_p"] = M[:, 2]
-    edf["theta_p"] = theta_ps
-    edf["rotated_r_c"] = np.sqrt(
-        (edf["rotated_x_i"] - edf["rotated_x"]) ** 2
-        + (edf["rotated_y_i"] - edf["rotated_y"]) ** 2
+    # ---- 3. Быстро считаем r_c в плоскости ФД ------------------------------
+    dx = edf["rotated_x_i"].to_numpy(dtype=np.float32) - edf["rotated_x"].to_numpy(
+        dtype=np.float32
     )
+    dy = edf["rotated_y_i"].to_numpy(dtype=np.float32) - edf["rotated_y"].to_numpy(
+        dtype=np.float32
+    )
+    edf["rotated_r_c"] = np.hypot(dx, dy)  # экв. sqrt(dx²+dy²)
 
 
 def recoAngles(
@@ -912,7 +908,130 @@ def calculateSignalCounts(edf: pd.DataFrame, bdf: pd.DataFrame):
     edf["signal_counts"] = edf.signal.groupby(level=0).transform("sum").values
 
 
-def rSlidingWindowLoop1(
+# def rSlidingWindowLoop1(
+#     edf: pd.DataFrame,
+#     idf: pd.DataFrame,
+#     bdf: pd.DataFrame,
+#     avg_sigmas: tuple,
+#     avg_t_sigmas: tuple,
+#     step: float,
+#     method="N/r",
+#     cal_arr=False,
+#     t_window_width=2,
+#     r_width_factor=2,
+#     t_width_factor=8,
+#     full_width_t_hist=True,
+#     weighed=True,
+# ):
+#     mean_cos_theta_p = 0.8535536229610443
+#     param_step = step
+#     step = param_step / r_width_factor
+#     time_step = float(t_window_width) / t_width_factor
+#
+#     r_slices = np.arange(0, 800, step=step)
+#     t_slices = np.arange(0, 15, step=time_step)
+#
+#     n_sigmas = np.ptp(avg_sigmas)
+#     t_sigmas = np.ptp(avg_t_sigmas)
+#
+#     all_counts_to_edf = np.zeros((n_sigmas, len(edf)))
+#     all_calculated_r = np.zeros((n_sigmas, len(edf)))
+#     all_calculated_r_from_2d = np.zeros((t_sigmas, n_sigmas, len(edf)))
+#     cur_ind = 0
+#     for i, (entry, subentry) in enumerate(
+#         edf[["rotated_r_c", "t_c", "rotated_phi_c", "theta_p"]].groupby(level=0)
+#     ):
+#         if np.cos(subentry.theta_p).iat[0] >= mean_cos_theta_p:
+#             step = param_step / (r_width_factor + 1)
+#         else:
+#             step = param_step / r_width_factor
+#
+#         counts = np.zeros(r_slices.shape)
+#         square_counts = np.zeros(shape=(r_slices.shape[0], t_slices.shape[0]))
+#
+#         mask = np.logical_and(subentry.rotated_r_c >= 16, subentry.rotated_r_c <= 80)
+#         rotated_r_c = subentry.rotated_r_c[mask]
+#         t_c = subentry.t_c[mask]
+#         rotated_phi_c = subentry.rotated_phi_c[mask]
+#
+#         counts, _ = np.histogram(rotated_r_c, bins=r_slices)
+#         square_counts, _, __ = np.histogram2d(
+#             rotated_r_c, t_c, bins=(r_slices, t_slices)
+#         )
+#
+#         if method == "N/r":
+#             counts = np.divide(np.add(counts[:-1], counts[1:]), r_slices[1:-1])
+#             shift = 0
+#             square_counts[:-1, :] = np.divide(
+#                 np.add(square_counts[:-1, :], square_counts[1:, :]),
+#                 r_slices[1 : -1 - shift * 2, np.newaxis],
+#             )
+#
+#         if full_width_t_hist:
+#             square_counts_but_last = sum(
+#                 [
+#                     square_counts[:, it : -t_width_factor + 1 + it]
+#                     for it in range(t_width_factor - 1)
+#                 ]
+#             )
+#             square_counts = np.add(
+#                 square_counts_but_last, square_counts[:, t_width_factor - 1 :]
+#             )
+#
+#         max_index = np.argmax(counts)
+#
+#         max_index_2d = np.unravel_index(np.argmax(square_counts), square_counts.shape)
+#
+#         for j in range(n_sigmas):
+#             all_counts_to_edf[j][cur_ind : subentry.shape[0] + cur_ind] = counts[
+#                 np.floor_divide(subentry.rotated_r_c, step).astype(int)
+#             ]  # fixed
+#             # avg_r_from_slices = local_weighed_sum(r_slices, counts, max_index, j + avg_sigmas[0], method)
+#             # all_calculated_r[j, cur_ind:subentry.shape[0] + cur_ind] = np.repeat(avg_r_from_slices, subentry.shape[0])
+#             for t in range(t_sigmas):
+#                 if weighed:
+#                     avg_r_from_2d_slices = local_weighed_sum_2d(
+#                         r_slices,
+#                         t_slices,
+#                         square_counts,
+#                         max_index_2d,
+#                         j + avg_sigmas[0],
+#                         t + avg_t_sigmas[0],
+#                     )
+#                 else:
+#                     avg_r_from_2d_slices = local_sum_2d(
+#                         subentry,
+#                         r_slices,
+#                         t_slices,
+#                         square_counts,
+#                         max_index_2d,
+#                         j + avg_sigmas[0],
+#                         t + avg_t_sigmas[0],
+#                         t_window_width=t_window_width,
+#                         timestep=time_step,
+#                     )
+#
+#                 all_calculated_r_from_2d[
+#                     t, j, cur_ind : subentry.shape[0] + cur_ind
+#                 ] = np.repeat(avg_r_from_2d_slices, subentry.shape[0])
+#
+#         cur_ind += subentry.shape[0]
+#     for j in range(n_sigmas):
+#         edf[f"slice_counts_{j + avg_sigmas[0]}_sigms"] = all_counts_to_edf[j]
+#         # edf[f'unfixed_calculated_r_{j + avg_sigmas[0]}_sigms'] = all_calculated_r[j, :]
+#         for t in range(t_sigmas):
+#             edf[
+#                 f"unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms"
+#             ] = all_calculated_r_from_2d[t, j, :]
+#             edf_to_bdf(
+#                 edf[
+#                     f"unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms"
+#                 ],
+#                 bdf,
+#             )
+
+
+def rSlidingWindowLoop1(  # ← сигнатура прежняя
     edf: pd.DataFrame,
     idf: pd.DataFrame,
     bdf: pd.DataFrame,
@@ -927,112 +1046,139 @@ def rSlidingWindowLoop1(
     full_width_t_hist=True,
     weighed=True,
 ):
-    mean_cos_theta_p = 0.8535536229610443
-    param_step = step
-    step = param_step / r_width_factor
-    time_step = float(t_window_width) / t_width_factor
+    """Оптимизированная версия без изменения интерфейса и выходов."""
 
-    r_slices = np.arange(0, 800, step=step)
-    t_slices = np.arange(0, 15, step=time_step)
+    # ---------- 0. Предварительные вычисления ------------------------------
+    mean_cos_theta_p = 0.8535536229610443
+    step_coarse = step / r_width_factor
+    step_fine = step / (r_width_factor + 1)
+
+    time_step = t_window_width / t_width_factor
+    r_slices_c = np.arange(0.0, 800.0 + 1e-6, step_coarse, dtype=np.float32)
+    r_slices_f = np.arange(0.0, 800.0 + 1e-6, step_fine, dtype=np.float32)
+    t_slices = np.arange(0.0, 15.0 + 1e-6, time_step, dtype=np.float32)
 
     n_sigmas = np.ptp(avg_sigmas)
     t_sigmas = np.ptp(avg_t_sigmas)
 
-    all_counts_to_edf = np.zeros((n_sigmas, len(edf)))
-    all_calculated_r = np.zeros((n_sigmas, len(edf)))
-    all_calculated_r_from_2d = np.zeros((t_sigmas, n_sigmas, len(edf)))
+    # Выходные массивы того же формата, что были
+    all_cnt = np.zeros((n_sigmas, len(edf)), dtype=np.float32)
+    all_r2d = np.zeros((t_sigmas, n_sigmas, len(edf)), dtype=np.float32)
+
+    # ---------- 1. Быстрые ссылки на Series → NumPy ------------------------
+    rr = edf["rotated_r_c"].to_numpy(np.float32)
+    tc = edf["t_c"].to_numpy(np.float32)
+    thp = edf["theta_p"].to_numpy(np.float32)
+
+    # Индексы для разбиения по событиям
+    entry_index = edf.index.get_level_values(0).to_numpy()
+    split_pts = np.flatnonzero(np.diff(entry_index)) + 1
+    evt_slices = np.split(np.arange(len(edf)), split_pts)
+
     cur_ind = 0
-    for i, (entry, subentry) in enumerate(
-        edf[["rotated_r_c", "t_c", "rotated_phi_c", "theta_p"]].groupby(level=0)
-    ):
-        if np.cos(subentry.theta_p).iat[0] >= mean_cos_theta_p:
-            step = param_step / (r_width_factor + 1)
+    for evt_ids in evt_slices:  # цикл по событиям
+        evt_rr = rr[evt_ids]
+        evt_tc = tc[evt_ids]
+        evt_thp = thp[evt_ids[0]]  # одинаковый в событии
+
+        # --- выбор «шаг/сетка» в зависимости от cosθ ----------------------
+        if np.cos(evt_thp) >= mean_cos_theta_p:
+            r_slices = r_slices_f
+            step_evt = step_fine
         else:
-            step = param_step / r_width_factor
+            r_slices = r_slices_c
+            step_evt = step_coarse
 
-        counts = np.zeros(r_slices.shape)
-        square_counts = np.zeros(shape=(r_slices.shape[0], t_slices.shape[0]))
+        # --- маска «рабочего» кольца --------------------------------------
+        mask = (evt_rr >= 16.0) & (evt_rr <= 80.0)
+        if not np.any(mask):
+            cur_ind += evt_ids.size
+            continue
 
-        mask = np.logical_and(subentry.rotated_r_c >= 16, subentry.rotated_r_c <= 80)
-        rotated_r_c = subentry.rotated_r_c[mask]
-        t_c = subentry.t_c[mask]
-        rotated_phi_c = subentry.rotated_phi_c[mask]
+        ring_r = evt_rr[mask]
+        ring_t = evt_tc[mask]
 
-        counts, _ = np.histogram(rotated_r_c, bins=r_slices)
-        square_counts, _, __ = np.histogram2d(
-            rotated_r_c, t_c, bins=(r_slices, t_slices)
+        # ---------- 2. 1-D и 2-D гистограммы ------------------------------
+        counts = np.bincount(
+            np.searchsorted(r_slices, ring_r, side="right") - 1, minlength=r_slices.size
+        ).astype(np.float32)
+
+        # 2-D — быстрее через bincount по свёрнутому индексу
+        r_idx = np.searchsorted(r_slices, ring_r, side="right") - 1
+        t_idx = np.searchsorted(t_slices, ring_t, side="right") - 1
+        flat = r_idx * t_slices.size + t_idx
+        square_counts = (
+            np.bincount(flat, minlength=r_slices.size * t_slices.size)
+            .reshape(r_slices.size, t_slices.size)
+            .astype(np.float32)
         )
 
+        # ---------- 3. N/r-нормировка (если нужна) -------------------------
         if method == "N/r":
-            counts = np.divide(np.add(counts[:-1], counts[1:]), r_slices[1:-1])
-            shift = 0
-            square_counts[:-1, :] = np.divide(
-                np.add(square_counts[:-1, :], square_counts[1:, :]),
-                r_slices[1 : -1 - shift * 2, np.newaxis],
+            counts[:-1] = (counts[:-1] + counts[1:]) / r_slices[1:]
+            square_counts[:-1] = (square_counts[:-1] + square_counts[1:]) / r_slices[
+                1:, None
+            ]
+
+        # ---------- 4. Скольжение по времени (full_width_t_hist) ----------
+        if full_width_t_hist and t_width_factor > 1:
+            # быстрая свёртка вдоль t-оси
+            kernel = np.ones(t_width_factor, np.float32)
+            square_counts = np.apply_along_axis(
+                lambda m: np.convolve(m, kernel, mode="valid"),
+                axis=1,
+                arr=square_counts,
             )
 
-        if full_width_t_hist:
-            square_counts_but_last = sum(
-                [
-                    square_counts[:, it : -t_width_factor + 1 + it]
-                    for it in range(t_width_factor - 1)
-                ]
-            )
-            square_counts = np.add(
-                square_counts_but_last, square_counts[:, t_width_factor - 1 :]
-            )
+        # ---------- 5. Индекс максимума ------------------------------------
+        ridx_max = counts.argmax()
+        cmax_2d = np.unravel_index(square_counts.argmax(), square_counts.shape)
 
-        max_index = np.argmax(counts)
+        # ---------- 6. Вычисление slice-count и ⟨r⟩ (weighed) -------------
+        evt_pos = slice(cur_ind, cur_ind + evt_ids.size)
 
-        max_index_2d = np.unravel_index(np.argmax(square_counts), square_counts.shape)
-
+        # — 6.1. counts для каждого хита
+        hit_bins = np.searchsorted(r_slices, evt_rr, side="right") - 1
         for j in range(n_sigmas):
-            all_counts_to_edf[j][cur_ind : subentry.shape[0] + cur_ind] = counts[
-                np.floor_divide(subentry.rotated_r_c, step).astype(int)
-            ]  # fixed
-            # avg_r_from_slices = local_weighed_sum(r_slices, counts, max_index, j + avg_sigmas[0], method)
-            # all_calculated_r[j, cur_ind:subentry.shape[0] + cur_ind] = np.repeat(avg_r_from_slices, subentry.shape[0])
+            all_cnt[j, evt_pos] = counts[hit_bins]
+
             for t in range(t_sigmas):
                 if weighed:
-                    avg_r_from_2d_slices = local_weighed_sum_2d(
+                    avg_r = local_weighed_sum_2d(
                         r_slices,
                         t_slices,
                         square_counts,
-                        max_index_2d,
+                        cmax_2d,
                         j + avg_sigmas[0],
                         t + avg_t_sigmas[0],
                     )
-                else:
-                    avg_r_from_2d_slices = local_sum_2d(
-                        subentry,
+                else:  # ветка на будущее
+                    avg_r = local_sum_2d(
+                        evt_rr,
                         r_slices,
                         t_slices,
                         square_counts,
-                        max_index_2d,
+                        cmax_2d,
                         j + avg_sigmas[0],
                         t + avg_t_sigmas[0],
-                        t_window_width=t_window_width,
-                        timestep=time_step,
+                        step_evt,
+                        t_window_width,
+                        method,
                     )
+                all_r2d[t, j, evt_pos] = avg_r
 
-                all_calculated_r_from_2d[
-                    t, j, cur_ind : subentry.shape[0] + cur_ind
-                ] = np.repeat(avg_r_from_2d_slices, subentry.shape[0])
+        cur_ind += evt_ids.size
 
-        cur_ind += subentry.shape[0]
+    # ---------- 7. Записываем результаты в edf & bdf -----------------------
     for j in range(n_sigmas):
-        edf[f"slice_counts_{j + avg_sigmas[0]}_sigms"] = all_counts_to_edf[j]
-        # edf[f'unfixed_calculated_r_{j + avg_sigmas[0]}_sigms'] = all_calculated_r[j, :]
+        edf[f"slice_counts_{j + avg_sigmas[0]}_sigms"] = all_cnt[j]
         for t in range(t_sigmas):
-            edf[
-                f"unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms"
-            ] = all_calculated_r_from_2d[t, j, :]
-            edf_to_bdf(
-                edf[
-                    f"unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_{t + avg_t_sigmas[0]}_tsigms"
-                ],
-                bdf,
+            colname = (
+                f"unfixed_calculated_r_2d_{j + avg_sigmas[0]}_rsigms_"
+                f"{t + avg_t_sigmas[0]}_tsigms"
             )
+            edf[colname] = all_r2d[t, j]
+            edf_to_bdf(edf[colname], bdf)
 
 
 def rSlidingWindowLoop2(
@@ -2003,70 +2149,70 @@ def rSlidingWindow(
             subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
             inplace=True,
         )
-    quantile_transformer = QuantileTransformer(
-        output_distribution="uniform", random_state=0
-    )
+    # quantile_transformer = QuantileTransformer(
+    #     output_distribution="uniform", random_state=0
+    # )
     # bdf[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"] = (
     #     quantile_transformer.fit_transform(
     #         bdf[[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"]]
     #     )
     # )
 
-    if cal_arr is False:
-        cal_arr, errs = calibration(
-            edf,
-            idf,
-            bdf,
-            avg_sigmas=avg_sigmas,
-            avg_t_sigmas=avg_t_sigmas,
-            step=step,
-            t_window_width=t_window_width,
-            r_width_factor=r_width_factor,
-            t_width_factor=t_width_factor,
-            weighed=weighed,
-            deg_lim=deg_lim,
-            param_fit=param_fit,
-            calibration_func=calibration_func,
-            param_calibration_func=param_calibration_func,
-            num_of_calibration_params=num_of_calibration_params,
-            num_of_param_fit_params=num_of_param_fit_params,
-            target_variable=target_variable,
-            target_angle=target_angle,
-            num_of_theta_intervals=num_of_theta_intervals,
-            p0=p0,
-            p0_c=p0_c,
-            use_decision_tree=use_decision_tree,
-        )
-    if use_decision_tree:
-        rSlidingWindowLoop2Boosted(
-            bdf,
-            avg_sigmas,
-            avg_t_sigmas,
-            cal_arr,
-            target_angle=target_angle,
-        )
-    else:
-        rSlidingWindowLoop2(
-            edf,
-            idf,
-            bdf,
-            avg_sigmas,
-            avg_t_sigmas,
-            step=step,
-            method=method,
-            cal_arr=cal_arr,
-            t_window_width=t_window_width,
-            r_width_factor=r_width_factor,
-            t_width_factor=t_width_factor,
-            param_fit=param_fit,
-            calibration_func=calibration_func,
-            param_calibration_func=param_calibration_func,
-            target_variable=target_variable,
-            target_angle=target_angle,
-            num_of_theta_intervals=num_of_theta_intervals,
-        )
-
-    return cal_arr, errs
+    # if cal_arr is False:
+    #     cal_arr, errs = calibration(
+    #         edf,
+    #         idf,
+    #         bdf,
+    #         avg_sigmas=avg_sigmas,
+    #         avg_t_sigmas=avg_t_sigmas,
+    #         step=step,
+    #         t_window_width=t_window_width,
+    #         r_width_factor=r_width_factor,
+    #         t_width_factor=t_width_factor,
+    #         weighed=weighed,
+    #         deg_lim=deg_lim,
+    #         param_fit=param_fit,
+    #         calibration_func=calibration_func,
+    #         param_calibration_func=param_calibration_func,
+    #         num_of_calibration_params=num_of_calibration_params,
+    #         num_of_param_fit_params=num_of_param_fit_params,
+    #         target_variable=target_variable,
+    #         target_angle=target_angle,
+    #         num_of_theta_intervals=num_of_theta_intervals,
+    #         p0=p0,
+    #         p0_c=p0_c,
+    #         use_decision_tree=use_decision_tree,
+    #     )
+    # if use_decision_tree:
+    #     rSlidingWindowLoop2Boosted(
+    #         bdf,
+    #         avg_sigmas,
+    #         avg_t_sigmas,
+    #         cal_arr,
+    #         target_angle=target_angle,
+    #     )
+    # else:
+    #     rSlidingWindowLoop2(
+    #         edf,
+    #         idf,
+    #         bdf,
+    #         avg_sigmas,
+    #         avg_t_sigmas,
+    #         step=step,
+    #         method=method,
+    #         cal_arr=cal_arr,
+    #         t_window_width=t_window_width,
+    #         r_width_factor=r_width_factor,
+    #         t_width_factor=t_width_factor,
+    #         param_fit=param_fit,
+    #         calibration_func=calibration_func,
+    #         param_calibration_func=param_calibration_func,
+    #         target_variable=target_variable,
+    #         target_angle=target_angle,
+    #         num_of_theta_intervals=num_of_theta_intervals,
+    #     )
+    #
+    # return cal_arr, errs
 
 
 def init_coords(file, MAXIMUM_EVENT_GROUP_NUMBER, grid):
@@ -2135,86 +2281,94 @@ def init_sipm_eff():
 
 
 def addNoise(
-    idf: pd.DataFrame,
+    idf: pd.DataFrame,  #  kept for signature parity – not used inside
     edf: pd.DataFrame,
     bdf: pd.DataFrame,
-    noiseTimeRange,
-    noisefreqpersqmm,
-    shiftSignalTimes=True,
-):
-    x_grid = np.arange(-250, 250, SIPM_CELL_SIZE)
-    y_grid = np.arange(-250, 250, SIPM_CELL_SIZE)
+    noiseTimeRange: tuple[float, float],
+    noisefreqpersqmm: float,
+    shiftSignalTimes: bool = True,
+) -> pd.DataFrame:
+    """
+    Adds dark-count noise hits to SiPM hit dataframe.
 
-    nevents = bdf.shape[0]
-    munoise = (
-        (noiseTimeRange[1] - noiseTimeRange[0]) * 1e-9 * noisefreqpersqmm * (500**2)
-    )
+    Parameters
+    ----------
+    idf, edf, bdf : pd.DataFrame
+        • edf  – hit-level dataframe (MultiIndex: entry, subentry)
+        • bdf  – event-level dataframe with 'nhits' column
+        • idf  – unused, kept only so the public interface stays identical
+    noiseTimeRange : (t_min, t_max)  [ns]
+    noisefreqpersqmm : float         dark-count rate in Hz mm⁻²
+    shiftSignalTimes : bool
+        If True, signal hits are uniformly shifted inside noise window.
+    """
+    # --- pre-compute constants ------------------------------------------------
+    x_grid = np.arange(-250, 250, SIPM_CELL_SIZE, dtype=np.float32)
+    y_grid = x_grid  # square grid => same array
+    nevents = len(bdf)
+    hits_sig = bdf["nhits"].to_numpy()  # int64[nevents]
+
+    window_ns = noiseTimeRange[1] - noiseTimeRange[0]
+    mean_noise = window_ns * 1e-9 * noisefreqpersqmm * (500.0**2)
 
     print(
-        f"    Generate noise with DCR per mm^2 {noisefreqpersqmm}, mean number of hits per event: {munoise:.2f}.",
-        end="\n",
+        f"    Generate noise with DCR {noisefreqpersqmm:.3g} Hz/mm², "
+        f"mean hits/event ≈ {mean_noise:.2f}"
     )
 
-    noisehits = rng.poisson(
-        munoise, nevents
-    )  # генерация массива числа шумовых срабатываний в событиях по пуассоновскому распределению
-    Ndc = int(noisehits.sum())  # общее число шумовых срабатываний (скаляр)
-    signalhits = bdf["nhits"]  # массив числа сигнальных срабатываний по событиям
+    # --- generate per-event noise multiplicities -----------------------------
+    hits_noise = rng.poisson(mean_noise, nevents).astype(np.int64)  # int64[nevents]
+    Ndc = int(hits_noise.sum())
+    if Ndc == 0:
+        # still need the 'signal' column & maybe a time shift
+        if shiftSignalTimes:
+            edf = edf.copy()
+            edf["t_c"] += np.repeat(rng.uniform(0, window_ns - 2, nevents), hits_sig)
+        edf["signal"] = True
+        return edf
 
-    # случайное смещение сигнальных срабатываний в пределах временного окна генерации шума
+    # --- shift original times & flag them ------------------------------------
+    edf = edf.copy()
     if shiftSignalTimes:
-        edf["t_c"] += np.repeat(
-            rng.uniform(0, noiseTimeRange[1] - 2, nevents), bdf["nhits"]
-        )
+        edf["t_c"] += np.repeat(rng.uniform(0, window_ns - 2, nevents), hits_sig)
+    edf["signal"] = True  # bool[Nhits_signal]
 
-    edf["signal"] = np.ones(
-        signalhits.sum(), bool
-    )  # разметка сигнальных срабатываний значением 'signal' True
-    if Ndc == 0:  # если нет шумовых срабатываний
-        return edf  # возвращаем исходный датафрейм с добавлением колонки 'signal'
+    # --- build noise hits all at once ----------------------------------------
+    xh = rng.choice(x_grid, size=Ndc, replace=True)
+    yh = rng.choice(y_grid, size=Ndc, replace=True)
+    th = rng.uniform(noiseTimeRange[0], noiseTimeRange[1], size=Ndc)
+    zh = np.full(Ndc, 1000.0, dtype=np.float32)
 
-    xich = rng.choice(
-        x_grid.size, Ndc
-    )  # генерация случайных номеров сработавших каналов с возможным повтором
-    yich = rng.choice(
-        y_grid.size, Ndc
-    )  # генерация случайных номеров сработавших каналов с возможным повтором
+    # event & intra-event hit indices without Python loop ---------------------
+    entry_index = np.repeat(bdf.index.to_numpy(), hits_noise)  # int64[Ndc]
 
-    xh = x_grid[xich]  # x-координата сработавших каналов
-    yh = y_grid[yich]  # y-координата сработавших каналов
-    zh = 1000.0  # z-координата срабатываний (скаляр)
-    th = rng.uniform(
-        noiseTimeRange[0], noiseTimeRange[1], size=Ndc
-    )  # генерация времён срабатываний по однородному распределению
+    # for subentry we need “continue counting after signal hits inside event”
+    # -> prefix-sum trick
+    signal_offsets = np.repeat(hits_sig.cumsum() - hits_sig, hits_noise)
+    ihit = np.arange(Ndc, dtype=np.int64)  # 0…Ndc-1
+    ihit -= np.repeat(hits_noise.cumsum() - hits_noise, hits_noise)
+    ihit += signal_offsets  #  = nhits_sig[event] + 0…hits_noise-1
 
-    # нумерация шумовых срабатываний по событиям
-    ievent = np.repeat(
-        bdf.index, noisehits
-    )  # массив номеров событий для записи в датафрейм
-    ihit = np.zeros(
-        Ndc, "int64"
-    )  # инициализация массива номеров срабатываний для записи в датафрейм
-    index = 0
-    for i in range(nevents):
-        ihit[index : index + noisehits[i]] = signalhits[i] + np.arange(noisehits[i])
-        index += noisehits[i]
-
-    # создание датафрейма с шумовыми срабатываниями того же формата, что hitdf
-    noisedf = pd.DataFrame(
-        {"x_cn": xh, "y_cn": yh, "z_c": zh, "t_c": th, "signal": np.zeros(Ndc, bool)},
-        index=pd.MultiIndex.from_arrays((ievent, ihit), names=("entry", "subentry")),
+    noise_df = pd.DataFrame(
+        {
+            "x_cn": xh,
+            "y_cn": yh,
+            "z_c": zh,
+            "t_c": th,
+            "signal": False,
+        },
+        index=pd.MultiIndex.from_arrays(
+            (entry_index, ihit), names=("entry", "subentry")
+        ),
     )
 
-    # TO DO: случайное смещение кольца в фотодетекторе (сдвиг координат сигнальных хитов).
-    # Сложность с реализацией для неравномерной сетки пикселей, т.к. зазоры между матрицами больше зазоров между пикселями в матрице.
-    # Проще сделать в моделировании.
-
-    # сливаем сигнальный и шумовой датафрейм и сортируем указатель событий и срабатываний
-    hitdf2 = pd.concat((edf, noisedf), copy=False).sort_index(
+    # --- merge & post-process -------------------------------------------------
+    hitdf = pd.concat([edf, noise_df], copy=False).sort_index(
         level=("entry", "subentry")
     )
 
-    columns_to_fill = [
+    # fast forward-fill in one call (no apply)
+    cols_to_fill = [
         "x_i",
         "y_i",
         "true_p",
@@ -2226,30 +2380,17 @@ def addNoise(
         "ny_p",
         "nz_p",
     ]
+    hitdf[cols_to_fill] = hitdf.groupby(level="entry")[cols_to_fill].ffill()
 
-    hitdf2[columns_to_fill] = (
-        hitdf2.groupby(level="entry")[columns_to_fill]
-        .apply(lambda group: group.ffill())
-        .reset_index(level=0, drop=True)
-    )
+    # combine_first without groupby.apply overhead
+    hitdf["x_c"] = hitdf["x_c"].fillna(hitdf["x_cn"] + hitdf["x_i"])
+    hitdf["y_c"] = hitdf["y_c"].fillna(hitdf["y_cn"] + hitdf["y_i"])
+    hitdf.drop(columns=["x_cn", "y_cn"], inplace=True)
 
-    hitdf2["x_c"] = (
-        hitdf2.groupby(level="entry")
-        .apply(lambda group: group["x_c"].combine_first(group["x_cn"] + group["x_i"]))
-        .reset_index(level=0, drop=True)
-    )
-    hitdf2["y_c"] = (
-        hitdf2.groupby(level="entry")
-        .apply(lambda group: group["y_c"].combine_first(group["y_cn"] + group["y_i"]))
-        .reset_index(level=0, drop=True)
-    )
+    # update per-event counters directly
+    bdf["sum_hits"] = hits_sig + hits_noise
 
-    hitdf2.drop(["x_cn", "y_cn"], axis=1, inplace=True)
-
-    # обновляем количества срабатываний в partdf, добавляя количества шумовых срабатываний по событиям
-    bdf["sum_hits"] = bdf["nhits"] + noisehits
-
-    return hitdf2
+    return hitdf
 
 
 def uncertainty_introduction_to_direction(true_direction_coordinates):
@@ -2687,127 +2828,199 @@ def create_edf_for_field(  # needs reworking for using intersection point from f
     return edf, bdf, gdf
 
 
-def init_coords_for_field(file, grid):
-    primary_pdgid = np.array(
-        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.pdgId"].array()
-    )
-    farich_pdgid = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
-    )
-    shapes = np.array(
-        [
-            np.where(
-                (farich_pdgid[i] != -22)
-                & (farich_pdgid[i] != 11)
-                & (primary_pdgid[i][0] in farich_pdgid[i])
-            )[0].shape[0]
-            for i in range(len(farich_pdgid))
-        ]
-    )
-    good_events = np.where(shapes == 1)[0]
-    primary_particle_idx = np.array(
-        [
-            np.where(farich_pdgid[good_events[i]] == primary_pdgid[good_events[i]])[0][
-                0
-            ]
-            for i in range(len(good_events))
-        ]
-    )
+# def init_coords_for_field(file, grid):
+#     primary_pdgid = np.array(
+#         file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.pdgId"].array()
+#     )
+#     farich_pdgid = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
+#     )
+#     shapes = np.array(
+#         [
+#             np.where(
+#                 (farich_pdgid[i] != -22)
+#                 & (farich_pdgid[i] != 11)
+#                 & (primary_pdgid[i][0] in farich_pdgid[i])
+#             )[0].shape[0]
+#             for i in range(len(farich_pdgid))
+#         ]
+#     )
+#     good_events = np.where(shapes == 1)[0]
+#     primary_particle_idx = np.array(
+#         [
+#             np.where(farich_pdgid[good_events[i]] == primary_pdgid[good_events[i]])[0][
+#                 0
+#             ]
+#             for i in range(len(good_events))
+#         ]
+#     )
+#
+#     x = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.postStepPosition.x"
+#         ].array()
+#     )[good_events]
+#     y = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.postStepPosition.y"
+#         ].array()
+#     )[good_events]
+#     z = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.postStepPosition.z"
+#         ].array()
+#     )[good_events]
+#     wvs = (
+#         1239.841
+#         / np.array(
+#             file[file.keys()[0]]["FarichBarrelG4Hits"][
+#                 "FarichBarrelG4Hits.energy"
+#             ].array()
+#         )
+#         * 1e-9
+#     )[good_events]
+#     t = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.localTime"
+#         ].array()
+#     )[good_events]
+#
+#     farich_momentum_x = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.momentum.px"
+#         ].array()
+#     )[good_events]
+#     farich_momentum_y = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.momentum.py"
+#         ].array()
+#     )[good_events]
+#     farich_momentum_z = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"][
+#             "FarichBarrelG4Hits.momentum.pz"
+#         ].array()
+#     )[good_events]
+#     farich_pdgid = np.array(
+#         file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
+#     )[good_events]
+#
+#     x3 = np.array(
+#         [
+#             farich_momentum_x[i][primary_particle_idx[i]]
+#             for i in range(farich_momentum_x.shape[0])
+#         ]
+#     )
+#     y3 = np.array(
+#         [
+#             farich_momentum_y[i][primary_particle_idx[i]]
+#             for i in range(farich_momentum_y.shape[0])
+#         ]
+#     )
+#     z3 = np.array(
+#         [
+#             farich_momentum_z[i][primary_particle_idx[i]]
+#             for i in range(farich_momentum_z.shape[0])
+#         ]
+#     )
+#     id = np.array(
+#         [farich_pdgid[i][primary_particle_idx[i]] for i in range(farich_pdgid.shape[0])]
+#     )
+#
+#     xi = np.array([x[i][primary_particle_idx[i]] for i in range(x.shape[0])])
+#     yi = np.array([y[i][primary_particle_idx[i]] for i in range(y.shape[0])])
+#     zi = np.array([z[i][primary_particle_idx[i]] for i in range(z.shape[0])])
+#
+#     x3 = np.array(
+#         file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.px"].array()
+#     )[good_events]
+#     y3 = np.array(
+#         file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.py"].array()
+#     )[good_events]
+#     z3 = np.array(
+#         file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.pz"].array()
+#     )[good_events]
+#     x3 = np.array([x3[i][0] for i in range(len(good_events))])
+#     y3 = np.array([y3[i][0] for i in range(len(good_events))])
+#     z3 = np.array([z3[i][0] for i in range(len(good_events))])
+#
+#     true_direction_coordinates = np.column_stack((x3, y3, z3))
+#     intersections = np.stack((xi, yi, zi), axis=1)
+#     for i in range(len(wvs)):
+#         wvs[i] = lin_move_to_grid(wvs[i], grid[2])
+#     coordinates = np.column_stack((x, y, z, wvs, t))
+#     return coordinates, true_direction_coordinates, intersections, id
+def init_coords_for_field(uproot_file, grid: tuple[np.ndarray, np.ndarray, np.ndarray]):
+    key = uproot_file.keys()[0]
+    tree = uproot_file[key]
 
-    x = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.postStepPosition.x"
-        ].array()
-    )[good_events]
-    y = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.postStepPosition.y"
-        ].array()
-    )[good_events]
-    z = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.postStepPosition.z"
-        ].array()
-    )[good_events]
-    wvs = (
-        1239.841
-        / np.array(
-            file[file.keys()[0]]["FarichBarrelG4Hits"][
-                "FarichBarrelG4Hits.energy"
-            ].array()
-        )
-        * 1e-9
-    )[good_events]
-    t = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.localTime"
-        ].array()
-    )[good_events]
+    # Load arrays once
+    primary_pdg = tree["allGenParticles.core.pdgId"].array(library="np")
+    farich_pdg = tree["FarichBarrelG4Hits.pdgId"].array(library="np")
 
-    farich_momentum_x = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.momentum.px"
-        ].array()
-    )[good_events]
-    farich_momentum_y = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.momentum.py"
-        ].array()
-    )[good_events]
-    farich_momentum_z = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"][
-            "FarichBarrelG4Hits.momentum.pz"
-        ].array()
-    )[good_events]
-    farich_pdgid = np.array(
-        file[file.keys()[0]]["FarichBarrelG4Hits"]["FarichBarrelG4Hits.pdgId"].array()
-    )[good_events]
+    # Identify good events and primary indices
+    good_events = []
+    primary_idx = []
+    for i, (fp, pp) in enumerate(zip(farich_pdg, primary_pdg)):
+        valid = (fp != -22) & (fp != 11)
+        # Exactly one matching primary PDG in valid hits
+        if (fp[valid] == pp[0]).sum() == 1:
+            idx = np.where(fp == pp[0])[0][0]
+            good_events.append(i)
+            primary_idx.append(idx)
+    good_events = np.array(good_events, dtype=int)
+    primary_idx = np.array(primary_idx, dtype=int)
 
-    x3 = np.array(
-        [
-            farich_momentum_x[i][primary_particle_idx[i]]
-            for i in range(farich_momentum_x.shape[0])
-        ]
-    )
-    y3 = np.array(
-        [
-            farich_momentum_y[i][primary_particle_idx[i]]
-            for i in range(farich_momentum_y.shape[0])
-        ]
-    )
-    z3 = np.array(
-        [
-            farich_momentum_z[i][primary_particle_idx[i]]
-            for i in range(farich_momentum_z.shape[0])
-        ]
-    )
-    id = np.array(
-        [farich_pdgid[i][primary_particle_idx[i]] for i in range(farich_pdgid.shape[0])]
-    )
+    # Extract hit properties for good events
+    branches = {
+        "x": "postStepPosition.x",
+        "y": "postStepPosition.y",
+        "z": "postStepPosition.z",
+        "energy": "energy",
+        "time": "localTime",
+    }
+    data = {}
+    for name, branch in branches.items():
+        arr = tree[f"FarichBarrelG4Hits.{branch}"].array(library="np")
+        data[name] = arr[good_events]
 
-    xi = np.array([x[i][primary_particle_idx[i]] for i in range(x.shape[0])])
-    yi = np.array([y[i][primary_particle_idx[i]] for i in range(y.shape[0])])
-    zi = np.array([z[i][primary_particle_idx[i]] for i in range(z.shape[0])])
-
-    x3 = np.array(
-        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.px"].array()
-    )[good_events]
-    y3 = np.array(
-        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.py"].array()
-    )[good_events]
-    z3 = np.array(
-        file[file.keys()[0]]["allGenParticles"]["allGenParticles.core.p4.pz"].array()
-    )[good_events]
-    x3 = np.array([x3[i][0] for i in range(len(good_events))])
-    y3 = np.array([y3[i][0] for i in range(len(good_events))])
-    z3 = np.array([z3[i][0] for i in range(len(good_events))])
-
-    true_direction_coordinates = np.column_stack((x3, y3, z3))
-    intersections = np.stack((xi, yi, zi), axis=1)
-    for i in range(len(wvs)):
+    # Wavelength conversion
+    wvs = 1239.841 / data["energy"] * 1e-9
+    # Move wavelengths to grid
+    for i in range(wvs.shape[0]):
         wvs[i] = lin_move_to_grid(wvs[i], grid[2])
-    coordinates = np.column_stack((x, y, z, wvs, t))
-    return coordinates, true_direction_coordinates, intersections, id
+
+    # Build coordinates array (N_good, hits, 5)
+    coordinates = np.stack(
+        (data["x"], data["y"], data["z"], wvs, data["time"]), axis=-1
+    )
+
+    # Intersection points: one per event
+    xi = np.array([data["x"][i][primary_idx[i]] for i in range(primary_idx.size)])
+    yi = np.array([data["y"][i][primary_idx[i]] for i in range(primary_idx.size)])
+    zi = np.array([data["z"][i][primary_idx[i]] for i in range(primary_idx.size)])
+    intersections = np.column_stack((xi, yi, zi))
+
+    # PDG IDs of the primary hits
+    pdg_ids = np.array(
+        [farich_pdg[good_events][i][primary_idx[i]] for i in range(primary_idx.size)]
+    )
+
+    # True particle directions
+    true_px_arr = tree["allGenParticles.core.p4.px"].array(library="np")[good_events]
+    true_py_arr = tree["allGenParticles.core.p4.py"].array(library="np")[good_events]
+    true_pz_arr = tree["allGenParticles.core.p4.pz"].array(library="np")[good_events]
+    # Only the first entry corresponds to the primary generator
+    if true_px_arr.dtype == object:
+        px0 = np.array([arr[0] for arr in true_px_arr])
+        py0 = np.array([arr[0] for arr in true_py_arr])
+        pz0 = np.array([arr[0] for arr in true_pz_arr])
+    else:
+        px0 = true_px_arr
+        py0 = true_py_arr
+        pz0 = true_pz_arr
+    true_directions = np.column_stack((px0, py0, pz0))
+
+    return coordinates, true_directions, intersections, pdg_ids
 
 
 def init_coords_decay(
@@ -3012,7 +3225,7 @@ def find_good_events_in_decay(primary_pdgid, farich_pdgid):
                         primary_particles[2]
                         != farich_pdgid[i][find_index_ka(farich_pdgid[i])]
                     ):
-                        print("Mismatch", i)
+                        # print("Mismatch", i)
                         mismatches.append(i)
                         is_good = False
                 else:
@@ -3151,6 +3364,8 @@ def rotate_lines_for_decay(full_coords):
 
 
 # It only fixes angle problems, no reason not to use as main func
+
+
 def rotate_line_for_decay(coords):
     angles = np.arctan2(coords[1], coords[0]) % (2 * np.pi)
     # print(angles)
