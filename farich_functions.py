@@ -2140,15 +2140,15 @@ def rSlidingWindow(
         full_width_t_hist=full_width_t_hist,
         weighed=weighed,
     )
-    if dcr < 1e5:
-        bdf.dropna(
-            subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
-            inplace=True,
-        )
-        edf.dropna(
-            subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
-            inplace=True,
-        )
+    # if dcr < 1e5:
+    #     bdf.dropna(
+    #         subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
+    #         inplace=True,
+    #     )
+    #     edf.dropna(
+    #         subset=[f"unfixed_calculated_r_2d_{avg_sigmas[0]}_rsigms_4_tsigms"],
+    #         inplace=True,
+    #     )
     # quantile_transformer = QuantileTransformer(
     #     output_distribution="uniform", random_state=0
     # )
@@ -2379,6 +2379,10 @@ def addNoise(
         "nx_p",
         "ny_p",
         "nz_p",
+        "gamma1_p",
+        "gamma2_p",
+        "gamma1_cos",
+        "gamma2_cos",
     ]
     hitdf[cols_to_fill] = hitdf.groupby(level="entry")[cols_to_fill].ffill()
 
@@ -3274,7 +3278,8 @@ def find_good_events_in_decay(primary_pdgid, farich_pdgid):
                         primary_particles[important_particle_ind]
                         != farich_pdgid[i][find_index_mu(farich_pdgid[i])]
                     ):
-                        print("Mismatch", i)
+                        # print("Mismatch", i)
+                        # TODO: look at it
                         mismatches.append(i)
                         is_good = False
                 else:
@@ -3387,6 +3392,7 @@ def create_edf_decay(
     good_events=[],
     primary_particle_idx=[],
     primary_particle_in_primary_idx=[],
+    keep_gamma_info=False,
     uncertain_angle=False,
 ):
     datadir = "data"
@@ -3410,6 +3416,74 @@ def create_edf_decay(
         primary_particle_idx,
         primary_particle_in_primary_idx,
     )
+    if keep_gamma_info:
+        gamma1_px = np.array(
+            [
+                arr[5]
+                for arr in np.array(
+                    decay_file[decay_file.keys()[0]]["allGenParticles"][
+                        "allGenParticles.core.p4.px"
+                    ].array()
+                )
+            ]
+        )[good_events]
+        gamma1_py = np.array(
+            [
+                arr[5]
+                for arr in np.array(
+                    decay_file[decay_file.keys()[0]]["allGenParticles"][
+                        "allGenParticles.core.p4.py"
+                    ].array()
+                )
+            ]
+        )[good_events]
+        gamma1_pz = np.array(
+            [
+                arr[5]
+                for arr in np.array(
+                    decay_file[decay_file.keys()[0]]["allGenParticles"][
+                        "allGenParticles.core.p4.pz"
+                    ].array()
+                )
+            ]
+        )[good_events]
+        gamma1_p = np.sqrt(gamma1_px**2 + gamma1_py**2 + gamma1_pz**2)
+        gamma1_cos = gamma1_pz / gamma1_p
+
+        gamma2_px = np.array(
+            [
+                arr[6]
+                for arr in np.array(
+                    decay_file[decay_file.keys()[0]]["allGenParticles"][
+                        "allGenParticles.core.p4.px"
+                    ].array()
+                )
+            ]
+        )[good_events]
+        gamma2_py = np.array(
+            [
+                arr[6]
+                for arr in np.array(
+                    decay_file[decay_file.keys()[0]]["allGenParticles"][
+                        "allGenParticles.core.p4.py"
+                    ].array()
+                )
+            ]
+        )[good_events]
+        gamma2_pz = np.array(
+            [
+                arr[6]
+                for arr in np.array(
+                    decay_file[decay_file.keys()[0]]["allGenParticles"][
+                        "allGenParticles.core.p4.pz"
+                    ].array()
+                )
+            ]
+        )[good_events]
+        gamma2_p = np.sqrt(gamma2_px**2 + gamma2_py**2 + gamma2_pz**2)
+        gamma2_cos = gamma2_pz / gamma2_p
+
+        gamma1_px = gamma1_py = gamma1_pz = gamma2_px = gamma2_py = gamma2_pz = 0
 
     idx_to_drop = []
     for i in range(coordinates.shape[0]):
@@ -3424,7 +3498,12 @@ def create_edf_decay(
     ids = np.delete(ids, idx_to_drop)
     print(coordinates.shape)
     print(true_direction_coordinates.shape)
-
+    if keep_gamma_info:
+        gamma1_p = np.delete(gamma1_p, idx_to_drop, axis=0)
+        gamma2_p = np.delete(gamma2_p, idx_to_drop, axis=0)
+        gamma1_cos = np.delete(gamma1_cos, idx_to_drop, axis=0)
+        gamma2_cos = np.delete(gamma2_cos, idx_to_drop, axis=0)
+        print(f"Gamma: {gamma2_p.shape}")
     true_direction_coordinates = (
         intersections
         / np.linalg.norm(intersections, axis=1)[:, None]
@@ -3578,7 +3657,11 @@ def create_edf_decay(
         repeat_nums,
         axis=0,
     )
-
+    if keep_gamma_info:
+        edf["gamma1_p"] = np.repeat(gamma1_p, repeat_nums, axis=0)
+        edf["gamma2_p"] = np.repeat(gamma2_p, repeat_nums, axis=0)
+        edf["gamma1_cos"] = np.repeat(gamma1_cos, repeat_nums, axis=0)
+        edf["gamma2_cos"] = np.repeat(gamma2_cos, repeat_nums, axis=0)
     true_direction_coordinates = repeat_nums = true_direction_coordinates_low = mass = (
         intersections
     ) = 0
